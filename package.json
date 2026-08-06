@@ -1,0 +1,18 @@
+{
+  "name": "tread",
+  "version": "0.1.0",
+  "description": "pyenv-style isolated environments for AI agents (claude, cursor-agent, kimi)",
+  "type": "module",
+  "bin": {
+    "tread": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun build --compile --minify src/index.ts --outfile dist/tread",
+    "install-global": "./install.sh",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "typescript": "^5.9.0"
+  }
+}
