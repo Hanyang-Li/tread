@@ -358,7 +358,7 @@ export async function runCommand(argv: string[], out: Out): Promise<number> {
           return 0;
         }
         const { mountLs } = await import("./tui/ls.tsx");
-        return await mountLs({ emit, out });
+        return await mountLs({ emit });
       }
 
       case "status": {

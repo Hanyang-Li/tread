@@ -1,4 +1,20 @@
 #!/usr/bin/env bun
 import { runCommand } from "./commands.ts";
 
-process.exitCode = await runCommand(process.argv.slice(2), (s) => process.stdout.write(s));
+// `tread status | head` closes stdout early; that is a normal way to use a
+// CLI, not a crash.
+function quietEpipe(e: unknown): void {
+  if ((e as NodeJS.ErrnoException)?.code === "EPIPE") process.exit(0);
+  throw e;
+}
+process.stdout.on("error", quietEpipe);
+
+function write(s: string): void {
+  try {
+    process.stdout.write(s);
+  } catch (e) {
+    quietEpipe(e);
+  }
+}
+
+process.exitCode = await runCommand(process.argv.slice(2), write);

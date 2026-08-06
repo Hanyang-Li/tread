@@ -243,24 +243,18 @@ export async function mcpDetail(
   const r = probe ? await fullProbe(s) : await cheapCheck(s);
   const target =
     s.transport === "http" ? s.url : [s.command, ...s.args].filter(Boolean).join(" ");
-  const lines = [
-    `${c.bold(s.name)}   ${statusCell(r, c)}`,
-    "",
-    kv(
-      [
-        ["transport", s.transport],
-        [s.transport === "http" ? "url" : "command", target],
-        ["latency", r.state === "ok" && r.latencyMs ? `${r.latencyMs} ms` : null],
-      ],
-      c,
-    ),
+  const pairs: [string, string | null][] = [
+    ["transport", s.transport],
+    [s.transport === "http" ? "url" : "command", target],
+    ["latency", r.state === "ok" && r.latencyMs ? `${r.latencyMs} ms` : null],
   ];
-  for (const k of s.headerKeys) lines.push(`  ${c.dim("header")}      ${k} ${c.dim(MASK)}`);
-  for (const k of s.envKeys) lines.push(`  ${c.dim("env")}         ${k} ${c.dim(MASK)}`);
-  if (r.state === "ok" && r.tools.length) {
-    lines.push("", `  ${c.dim("tools")}       ${r.tools.length}`);
-    lines.push("    " + r.tools.join("  "));
-  }
+  // keys only — the values are credentials
+  for (const k of s.headerKeys) pairs.push(["header", `${k}  ${c.dim(MASK)}`]);
+  for (const k of s.envKeys) pairs.push(["env", `${k}  ${c.dim(MASK)}`]);
+  if (r.state === "ok" && r.tools.length) pairs.push(["tools", String(r.tools.length)]);
+
+  const lines = [`${c.bold(s.name)}   ${statusCell(r, c)}`, "", kv(pairs, c)];
+  if (r.state === "ok" && r.tools.length) lines.push("    " + r.tools.join("  "));
   return lines.join("\n") + "\n";
 }
 

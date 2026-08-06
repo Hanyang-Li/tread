@@ -59,7 +59,9 @@ export function table(
         if (right) return padLeft(cell, widths[i]) + (last ? "" : " ".repeat(gap));
         return last ? cell : pad(cell, widths[i] + gap);
       })
-      .join(""),
+      .join("")
+      // an empty trailing cell would otherwise leave the gap dangling
+      .replace(/\s+$/, ""),
   );
 }
 
