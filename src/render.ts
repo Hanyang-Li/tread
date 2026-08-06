@@ -29,16 +29,37 @@ function pad(s: string, w: number): string {
   return s + " ".repeat(Math.max(0, w - displayWidth(s)));
 }
 
-/** Align rows into columns. The last cell of each row is never padded. */
-export function table(rows: string[][], opts: { gap?: number } = {}): string[] {
+function padLeft(s: string, w: number): string {
+  return " ".repeat(Math.max(0, w - displayWidth(s))) + s;
+}
+
+export type Align = "left" | "right";
+
+/**
+ * Align rows into columns. A left-aligned last cell is not padded, so lines
+ * carry no trailing whitespace; a right-aligned one still is, since its
+ * padding is what does the aligning.
+ */
+export function table(
+  rows: string[][],
+  opts: { gap?: number; align?: Align[] } = {},
+): string[] {
   const gap = opts.gap ?? 2;
+  const align = opts.align ?? [];
   const cols = rows.length ? Math.max(...rows.map((r) => r.length)) : 0;
   const widths: number[] = [];
   for (let i = 0; i < cols; i++) {
     widths[i] = Math.max(0, ...rows.map((r) => displayWidth(r[i] ?? "")));
   }
   return rows.map((r) =>
-    r.map((cell, i) => (i === r.length - 1 ? cell : pad(cell, widths[i] + gap))).join(""),
+    r
+      .map((cell, i) => {
+        const right = align[i] === "right";
+        const last = i === r.length - 1;
+        if (right) return padLeft(cell, widths[i]) + (last ? "" : " ".repeat(gap));
+        return last ? cell : pad(cell, widths[i] + gap);
+      })
+      .join(""),
   );
 }
 
