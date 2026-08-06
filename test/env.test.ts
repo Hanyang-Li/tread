@@ -4,129 +4,86 @@ import os from "node:os";
 import path from "node:path";
 
 let tmp: string;
-
 beforeAll(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tread-test-"));
+  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tread-env-"));
   process.env.TREAD_STATE_DIR = path.join(tmp, "state");
-  process.env.TREAD_SHARE_DIR = path.join(tmp, "share");
+  delete process.env.TREAD_ENV;
 });
+afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-afterAll(() => {
-  fs.rmSync(tmp, { recursive: true, force: true });
-});
-
-// imports must come after env setup for share/state overrides to apply
-const { envDir, isAgent, layout, skillsAgentFlag, validateEnvName } = await import("../src/paths.ts");
-const { createEnv, listEnvs, parseAgentEnv, removeEnv, requireEnv } = await import("../src/env.ts");
-const { showHooks, showMcp } = await import("../src/inspect.ts");
-
-describe("paths", () => {
-  test("validateEnvName", () => {
-    expect(() => validateEnvName("demo-1.x")).not.toThrow();
-    expect(() => validateEnvName("../evil")).toThrow();
-    expect(() => validateEnvName("")).toThrow();
-    expect(() => validateEnvName("a/b")).toThrow();
-  });
-
-  test("envDir is under state dir, classified by agent", () => {
-    expect(envDir("claude", "demo")).toBe(path.join(process.env.TREAD_STATE_DIR!, "claude", "demo"));
-  });
-
-  test("isAgent", () => {
-    expect(isAgent("claude")).toBe(true);
-    expect(isAgent("vim")).toBe(false);
-  });
-
-  test("skillsAgentFlag", () => {
-    expect(skillsAgentFlag("claude")).toBe("claude-code");
-    expect(skillsAgentFlag("cursor")).toBe("cursor");
-    expect(skillsAgentFlag("kimi")).toBe("kimi-code-cli");
-  });
-
-  test("parseAgentEnv", () => {
-    expect(parseAgentEnv(["kimi", "x"])).toEqual({ agent: "kimi", name: "x" });
-    expect(() => parseAgentEnv(["bad", "x"])).toThrow();
-    expect(() => parseAgentEnv(["kimi"])).toThrow();
-  });
-});
+const {
+  createEnv, ensureSkeleton, listEnvs, removeEnv, requireEnv, resolveEnv,
+  touchLastUsed, lastUsed,
+} = await import("../src/env.ts");
+const { envDir, skillsDir, agentDir } = await import("../src/paths.ts");
 
 describe("env lifecycle", () => {
-  test("create/list/require/remove", () => {
-    const dir = createEnv("claude", "demo");
-    expect(dir).toBe(envDir("claude", "demo"));
-    expect(fs.existsSync(layout("claude", dir).skillsDir)).toBe(true);
-    expect(fs.existsSync(layout("claude", dir).pluginsDir)).toBe(true);
-    expect(() => createEnv("claude", "demo")).toThrow(); // already exists
-
-    expect(listEnvs()).toEqual({ claude: ["demo"], cursor: [], kimi: [] });
-    expect(requireEnv("claude", "demo")).toBe(dir);
-    expect(() => requireEnv("claude", "nope")).toThrow();
-
-    removeEnv("claude", "demo");
-    expect(fs.existsSync(dir)).toBe(false);
-  });
-
-  test("kimi env writes extra_skill_dirs into config.toml", () => {
-    const dir = createEnv("kimi", "k1");
-    const cfg = fs.readFileSync(path.join(dir, ".kimi-code", "config.toml"), "utf8");
-    const skillsDir = layout("kimi", dir).skillsDir;
-    expect(cfg).toContain(`extra_skill_dirs = ["${skillsDir}"]`);
-    expect(fs.existsSync(skillsDir)).toBe(true);
-  });
-});
-
-describe("inspect", () => {
-  function capture(fn: () => void): string {
-    const orig = console.log;
-    let out = "";
-    console.log = (...a: any[]) => (out += a.join(" ") + "\n");
-    try {
-      fn();
-    } finally {
-      console.log = orig;
+  test("create 建出三个 agent 骨架", () => {
+    const dir = createEnv("work");
+    expect(dir).toBe(envDir("work"));
+    for (const a of ["claude", "cursor", "kimi"] as const) {
+      expect(fs.existsSync(agentDir(dir, a))).toBe(true);
     }
-    return out;
-  }
-
-  test("mcp: reads mcpServers per agent", () => {
-    const dir = createEnv("claude", "m1");
-    fs.writeFileSync(
-      layout("claude", dir).mcpFile,
-      JSON.stringify({ mcpServers: { github: { command: "npx", args: ["-y", "@mcp/github"] }, web: { url: "https://x" } } }),
-    );
-    const out = capture(() => showMcp("claude", "m1"));
-    expect(out).toContain("github");
-    expect(out).toContain("npx -y @mcp/github");
-    expect(out).toContain("web");
-    expect(out).toContain("https://x");
+    expect(fs.existsSync(skillsDir(dir, "kimi"))).toBe(true);
   });
 
-  test("mcp: empty shows placeholder", () => {
-    createEnv("cursor", "m2");
-    expect(capture(() => showMcp("cursor", "m2"))).toContain("(no mcp servers)");
+  test("kimi 骨架含 extra_skill_dirs 桥接", () => {
+    const dir = envDir("work");
+    const toml = fs.readFileSync(path.join(dir, ".kimi-code/config.toml"), "utf8");
+    expect(toml).toContain(`extra_skill_dirs = ["${skillsDir(dir, "kimi")}"]`);
   });
 
-  test("hooks: claude settings.json shape", () => {
-    const dir = createEnv("claude", "h1");
-    fs.writeFileSync(
-      layout("claude", dir).hooksFile,
-      JSON.stringify({
-        hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo hi" }] }] },
-      }),
-    );
-    const out = capture(() => showHooks("claude", "h1"));
-    expect(out).toContain("PreToolUse [Bash]");
-    expect(out).toContain("echo hi");
+  test("kimi 凭证 symlink 指回真 home", () => {
+    const dir = envDir("work");
+    for (const n of ["credentials", "oauth"]) {
+      const p = path.join(dir, ".kimi-code", n);
+      expect(fs.lstatSync(p).isSymbolicLink()).toBe(true);
+      expect(fs.readlinkSync(p)).toBe(path.join(os.homedir(), ".kimi-code", n));
+    }
   });
 
-  test("hooks: kimi config.toml [[hooks]]", () => {
-    const dir = createEnv("kimi", "h2");
-    fs.appendFileSync(
-      layout("kimi", dir).hooksFile,
-      `\n[[hooks]]\nevent = "PreToolUse"\nmatcher = "Bash"\ncommand = "node check.mjs"\n`,
-    );
-    const out = capture(() => showHooks("kimi", "h2"));
-    expect(out).toContain("PreToolUse [Bash]");
-    expect(out).toContain("node check.mjs");
+  test("重复 create 报错", () => {
+    expect(() => createEnv("work")).toThrow(/already exists/);
+  });
+
+  test("ensureSkeleton 幂等且自愈", () => {
+    const dir = envDir("work");
+    fs.rmSync(agentDir(dir, "cursor"), { recursive: true, force: true });
+    ensureSkeleton(dir);
+    expect(fs.existsSync(agentDir(dir, "cursor"))).toBe(true);
+    expect(() => ensureSkeleton(dir)).not.toThrow();
+  });
+
+  test("ensureSkeleton 不覆盖已存在的 config.toml", () => {
+    const dir = envDir("work");
+    const f = path.join(dir, ".kimi-code/config.toml");
+    fs.writeFileSync(f, 'default_model = "x"\n');
+    ensureSkeleton(dir);
+    expect(fs.readFileSync(f, "utf8")).toBe('default_model = "x"\n');
+  });
+
+  test("list / require / remove", () => {
+    createEnv("alpha");
+    expect(listEnvs()).toEqual(["alpha", "work"]);
+    expect(requireEnv("work")).toBe(envDir("work"));
+    expect(() => requireEnv("nope")).toThrow(/no environment named/);
+    removeEnv("alpha");
+    expect(listEnvs()).toEqual(["work"]);
+  });
+
+  test("requireEnv 给出 did-you-mean", () => {
+    expect(() => requireEnv("wrok")).toThrow(/did you mean "work"/);
+  });
+
+  test("resolveEnv 回落到 TREAD_ENV", () => {
+    process.env.TREAD_ENV = "work";
+    expect(resolveEnv()).toBe(envDir("work"));
+    delete process.env.TREAD_ENV;
+    expect(() => resolveEnv()).toThrow(/no environment active/);
+  });
+
+  test("lastUsed 持久化", () => {
+    touchLastUsed("work");
+    expect(typeof lastUsed().work).toBe("string");
   });
 });

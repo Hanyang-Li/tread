@@ -1,89 +1,56 @@
 import os from "node:os";
 import path from "node:path";
-
-export const AGENTS = ["claude", "cursor", "kimi"] as const;
-export type Agent = (typeof AGENTS)[number];
+import { AGENT_SPECS, AGENTS, type Agent } from "./agents.ts";
 
 export const realHome = os.homedir();
 
-/** Overridable via env for testing. */
 export function stateDir(): string {
   return process.env.TREAD_STATE_DIR ?? path.join(realHome, ".local/state/tread");
 }
-export function shareDir(): string {
-  return process.env.TREAD_SHARE_DIR ?? path.join(realHome, ".local/share/tread");
-}
-export function binDir(): string {
-  return path.join(realHome, ".local/bin");
+
+export function envsDir(): string {
+  return path.join(stateDir(), "envs");
 }
 
-export function isAgent(s: string): s is Agent {
-  return (AGENTS as readonly string[]).includes(s);
+export function stateFile(): string {
+  return path.join(stateDir(), "state.json");
 }
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function validateEnvName(name: string): void {
   if (!NAME_RE.test(name)) {
-    throw new Error(`invalid env name "${name}": use letters, digits, dot, dash, underscore`);
+    throw new Error(
+      `invalid name "${name}"\n\n  use letters, digits, dot, dash, underscore`,
+    );
   }
 }
 
-export function envDir(agent: Agent, name: string): string {
+export function envDir(name: string): string {
   validateEnvName(name);
-  return path.join(stateDir(), agent, name);
+  return path.join(envsDir(), name);
 }
 
-/** Per-agent directory layout inside an env. */
-export function layout(agent: Agent, env: string) {
-  switch (agent) {
-    case "claude": {
-      const config = path.join(env, ".claude");
-      return {
-        configDir: config,
-        skillsDir: path.join(config, "skills"),
-        pluginsDir: path.join(config, "plugins"),
-        hooksFile: path.join(config, "settings.json"),
-        mcpFile: path.join(config, ".claude.json"),
-      };
-    }
-    case "cursor": {
-      const config = path.join(env, ".cursor");
-      return {
-        configDir: config,
-        // the skills CLI installs cursor skills to ~/.agents/skills, which
-        // cursor-agent also discovers (its skill-path-utils include .agents/skills/)
-        skillsDir: path.join(env, ".agents/skills"),
-        pluginsDir: path.join(env, "plugins"),
-        hooksFile: path.join(config, "hooks.json"),
-        mcpFile: path.join(config, "mcp.json"),
-      };
-    }
-    case "kimi": {
-      const config = path.join(env, ".kimi-code");
-      return {
-        configDir: config,
-        skillsDir: path.join(env, ".agents/skills"),
-        pluginsDir: path.join(config, "plugins"),
-        hooksFile: path.join(config, "config.toml"),
-        mcpFile: path.join(config, "mcp.json"),
-      };
-    }
+export function agentDir(envRoot: string, a: Agent): string {
+  return path.join(envRoot, AGENT_SPECS[a].dir);
+}
+
+/**
+ * Where a global skill install lands when HOME=<envRoot>.
+ * claude and cursor resolve under their own config dir; kimi resolves to
+ * ~/.agents/skills, which we bridge via config.toml's extra_skill_dirs.
+ */
+export function skillsDir(envRoot: string, a: Agent): string {
+  return a === "kimi"
+    ? path.join(envRoot, ".agents/skills")
+    : path.join(agentDir(envRoot, a), "skills");
+}
+
+/** The variables `tread use` exports into the caller's shell. */
+export function activationEnv(envRoot: string): Record<string, string> {
+  const out: Record<string, string> = { TREAD_ENV_DIR: envRoot };
+  for (const a of AGENTS) {
+    Object.assign(out, AGENT_SPECS[a].envVars(agentDir(envRoot, a)));
   }
-}
-
-/** The `skills` CLI (npx skills) agent flag for each tread agent. */
-export function skillsAgentFlag(agent: Agent): string {
-  switch (agent) {
-    case "claude":
-      return "claude-code";
-    case "cursor":
-      return "cursor";
-    case "kimi":
-      return "kimi-code-cli";
-  }
-}
-
-export function skillsCliPath(): string {
-  return path.join(shareDir(), "node_modules/skills/bin/cli.mjs");
+  return out;
 }
