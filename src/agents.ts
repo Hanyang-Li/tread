@@ -21,6 +21,13 @@ export interface AgentSpec {
    * the blast radius as small as the evidence allows.
    */
   needsHome: boolean;
+  /**
+   * Extra home-relative paths that must not be shared with the real home.
+   * The agent's own `dir` is always isolated; this covers state the agent
+   * keeps somewhere else. Paths may be nested — everything above them is
+   * still shared.
+   */
+  isolate(platform: NodeJS.Platform): string[];
 }
 
 export const AGENT_SPECS: Record<Agent, AgentSpec> = {
@@ -30,6 +37,7 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     dir: ".claude",
     envVars: (d) => ({ CLAUDE_CONFIG_DIR: d }),
     needsHome: false,
+    isolate: () => [],
   },
   cursor: {
     bin: "cursor-agent",
@@ -37,6 +45,15 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     dir: ".cursor",
     envVars: (d) => ({ CURSOR_CONFIG_DIR: d, CURSOR_DATA_DIR: d }),
     needsHome: true,
+    // cursor-agent also reads the desktop app's state DB, which caches the
+    // skill and plugin index. Sharing it leaks every skill you ever had;
+    // isolating the whole app dir would cost the login, so isolate just this.
+    isolate: (p) =>
+      p === "darwin"
+        ? ["Library/Application Support/Cursor/User/globalStorage"]
+        : p === "win32"
+          ? ["AppData/Roaming/Cursor/User/globalStorage"]
+          : [".config/cursor/User/globalStorage"],
   },
   kimi: {
     bin: "kimi",
@@ -44,6 +61,7 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     dir: ".kimi-code",
     envVars: (d) => ({ KIMI_CODE_HOME: d }),
     needsHome: true,
+    isolate: () => [],
   },
 };
 

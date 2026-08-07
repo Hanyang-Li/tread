@@ -59,8 +59,14 @@ HOME 只对需要它的 agent 进程生效——shim 里设置，不会污染你
 
 ```
 拒绝：.claude  .cursor  .kimi-code  .agents  .local/state
+      Library/Application Support/Cursor/User/globalStorage   ← macOS
 共享：其余一切（.ssh  .config  .zshrc  .npmrc  .cargo  …）
 ```
+
+拒绝项支持嵌套：最后那条是 Cursor 桌面版的状态库，缓存着 skill / plugin 索引，
+共享它会把你装过的每个 skill 都带进来；但整个 `Library` 又是 cursor 登录态所在，
+所以只挖掉这一个子路径，它的祖先照常镜像、兄弟目录照常共享。拒绝项由 agent 适配器
+声明并区分平台，注册新 agent 时跟着它一起走。
 
 用拒绝表而不是允许表，是因为允许表会漏掉你以后才装的工具。链接在**每次激活时重新同步**，
 新增的配置自动接上，真 home 里删掉的会被摘除。环境里自己建的真实文件永远优先，不会被链接覆盖。
@@ -125,6 +131,9 @@ MCP 的 header 与 env **只显示 key，值一律打码**。
 ## 已知限制
 
 - **claude 每个环境要单独 `/login` 一次。** 它的凭证在 keychain 里且与 config dir 绑定，磁盘上没有可复制的东西（实测：全量复制 config dir 也无效）。cursor 的凭证在 keychain 且不受 config dir 影响，自动共享；kimi 的凭证在磁盘上，tread 建环境时 symlink 回真 home，也不用重登。
+- **cursor 会往新环境里自动下载你账号的默认插件。** 实测新建环境 32 秒后它自己拉了一份
+  `dbt / github / redis-development / superpowers`——是独立副本不是泄漏，但新环境对 cursor
+  而言不是全空的。要清掉用 `cursor-agent plugin` 自己处理。
 - **只管理环境级（全局）内容。** project scope 的 skill / plugin / MCP / hook 不读也不显示——那是各 agent 自己的事。
 - **新建 kimi 环境会从真 home 播种 provider / model 配置**（剥掉 hooks）。kimi 把模型设置和凭证分开存，不播种的话环境根本起不来。
 - `tread use` 需要 shell 集成。脚本里用 `tread exec` 代替。
@@ -141,7 +150,7 @@ tread init starship
 
 ```bash
 bun install
-bun test              # 121 个测试，含 e2e
+bun test              # 127 个测试，含 e2e
 bun run typecheck
 bun run src/index.ts  # 直接从源码跑
 ```

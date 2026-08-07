@@ -13,7 +13,7 @@ afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 const {
   createEnv, ensureSkeleton, listEnvs, removeEnv, requireEnv, resolveEnv,
-  touchLastUsed, lastUsed, syncHomeLinks,
+  touchLastUsed, lastUsed, syncHomeLinks, isolatedPaths,
 } = await import("../src/env.ts");
 const { envDir, skillsDir, agentDir } = await import("../src/paths.ts");
 
@@ -62,6 +62,34 @@ describe("env lifecycle", () => {
       if (!fs.existsSync(p)) continue;
       expect(fs.lstatSync(p).isSymbolicLink()).toBe(false);
     }
+  });
+
+  test("嵌套拒绝：cursor 桌面版的 globalStorage 被隔离，但上层仍共享", () => {
+    const dir = envDir("work");
+    const rel = "Library/Application Support/Cursor/User/globalStorage";
+    if (!fs.existsSync(path.join(os.homedir(), rel))) return;
+    // the skill/plugin index is cached there; a link would leak every skill
+    expect(fs.existsSync(path.join(dir, rel))).toBe(false);
+    // ancestors are mirrored as real dirs so their siblings stay shared
+    for (const anc of ["Library", "Library/Application Support",
+                       "Library/Application Support/Cursor",
+                       "Library/Application Support/Cursor/User"]) {
+      expect(fs.lstatSync(path.join(dir, anc)).isSymbolicLink()).toBe(false);
+    }
+    // and a sibling of the denied path is still a link, not a copy
+    const sib = path.join(dir, "Library/Caches");
+    if (fs.existsSync(path.join(os.homedir(), "Library/Caches"))) {
+      expect(fs.lstatSync(sib).isSymbolicLink()).toBe(true);
+    }
+  });
+
+  test("isolatedPaths 覆盖三个 agent 目录并按平台给出 cursor 的额外路径", () => {
+    const mac = isolatedPaths("darwin");
+    for (const d of [".claude", ".cursor", ".kimi-code", ".agents", ".local/state"]) {
+      expect(mac).toContain(d);
+    }
+    expect(mac).toContain("Library/Application Support/Cursor/User/globalStorage");
+    expect(isolatedPaths("linux")).toContain(".config/cursor/User/globalStorage");
   });
 
   test(".local 不整体链接，避免把环境套进自己里；但 bin/share 仍可达", () => {

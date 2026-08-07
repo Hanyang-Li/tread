@@ -26,13 +26,37 @@ function isLink(p: string): boolean {
  *
  * Derived from the agent table, so registering an agent isolates it too.
  */
-function isolatedNames(): Set<string> {
-  const names = new Set<string>([
+export function isolatedPaths(platform: NodeJS.Platform = process.platform): string[] {
+  const paths = [
     ".agents", // shared skill root; kimi discovers user skills here
-    ".local", // holds tread's own state — linking it would loop
-  ]);
-  for (const a of AGENTS) names.add(AGENT_SPECS[a].dir);
-  return names;
+    ".local/state", // tread's own state lives here — a link would nest the env in itself
+  ];
+  for (const a of AGENTS) {
+    paths.push(AGENT_SPECS[a].dir, ...AGENT_SPECS[a].isolate(platform));
+  }
+  return paths;
+}
+
+interface DenyNode {
+  deny: boolean;
+  children: Map<string, DenyNode>;
+}
+
+function denyTree(paths: string[]): DenyNode {
+  const root: DenyNode = { deny: false, children: new Map() };
+  for (const p of paths) {
+    let node = root;
+    for (const part of p.split("/")) {
+      let next = node.children.get(part);
+      if (!next) {
+        next = { deny: false, children: new Map() };
+        node.children.set(part, next);
+      }
+      node = next;
+    }
+    node.deny = true;
+  }
+  return root;
 }
 
 /** True when `link` is a symlink tread created into the real home. */
@@ -64,41 +88,40 @@ function linkInto(target: string, link: string): boolean {
  */
 export function syncHomeLinks(envRoot: string): { added: string[]; pruned: string[] } {
   const home = os.homedir();
-  const skip = isolatedNames();
   const added: string[] = [];
   const pruned: string[] = [];
+  const walked: string[] = [];
 
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(home);
-  } catch {
-    return { added, pruned };
-  }
+  const walk = (rel: string, node: DenyNode): void => {
+    const src = rel ? path.join(home, rel) : home;
+    const dst = rel ? path.join(envRoot, rel) : envRoot;
+    walked.push(dst);
+    for (const name of safeReaddir(src)) {
+      const child = node.children.get(name);
+      const childRel = rel ? `${rel}/${name}` : name;
+      const link = path.join(dst, name);
 
-  for (const name of entries) {
-    if (skip.has(name)) continue;
-    if (linkInto(path.join(home, name), path.join(envRoot, name))) added.push(name);
-  }
-
-  // ~/.local is denied wholesale because tread's state lives under it and a
-  // link would nest the env inside itself. Its siblings are still useful, so
-  // mirror one level down and skip only `state`.
-  const localSrc = path.join(home, ".local");
-  if (fs.existsSync(localSrc)) {
-    const localDst = path.join(envRoot, ".local");
-    if (!isLink(localDst)) {
-      fs.mkdirSync(localDst, { recursive: true });
-      for (const name of safeReaddir(localSrc)) {
-        if (name === "state") continue;
-        if (linkInto(path.join(localSrc, name), path.join(localDst, name))) {
-          added.push(`.local/${name}`);
-        }
+      if (child?.deny) {
+        // fully isolated: the env owns this path, tread never links it
+        continue;
       }
+      if (child) {
+        // an isolated path lives below here, so mirror this level instead of
+        // linking it — otherwise the link would drag the denied child along
+        if (isLink(link)) fs.rmSync(link, { force: true });
+        fs.mkdirSync(link, { recursive: true });
+        walk(childRel, child);
+        continue;
+      }
+      if (linkInto(path.join(src, name), link)) added.push(childRel);
     }
-  }
+  };
+
+  if (!fs.existsSync(home)) return { added, pruned };
+  walk("", denyTree(isolatedPaths()));
 
   // drop links whose target disappeared from the real home
-  for (const dir of [envRoot, path.join(envRoot, ".local")]) {
+  for (const dir of walked) {
     for (const name of safeReaddir(dir)) {
       const link = path.join(dir, name);
       if (!pointsIntoHome(link)) continue;
