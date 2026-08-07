@@ -2,10 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AGENTS, AGENT_SPECS } from "./agents.ts";
 import { ensureSkeleton, requireEnv } from "./env.ts";
-import { envDir, envsDir, realHome } from "./paths.ts";
-
-/** How far a chain of dereferenced symlinks may go before we give up. */
-const MAX_DEPTH = 8;
+import { envDir, envsDir, realHome, stateDir } from "./paths.ts";
 
 /** Past this size a file is not worth scanning for a path to rewrite. */
 const MAX_REWRITE_BYTES = 8 * 1024 * 1024;
@@ -42,8 +39,21 @@ export interface CopyResult {
   skipped: string[];
 }
 
-function intoRealHome(target: string): boolean {
-  return target === realHome() || target.startsWith(realHome() + path.sep);
+function under(p: string, base: string): boolean {
+  return p === base || p.startsWith(base + path.sep);
+}
+
+/**
+ * Whether a link is one `syncHomeLinks` put there to share the real home.
+ *
+ * The state dir has to be carved out: environments live under the real home
+ * themselves, so "points into the real home" is also true of a link to the
+ * environment's own sibling file — and plugin trees ship those (superpowers
+ * has `AGENTS.md -> CLAUDE.md`). Without the exception those links were read
+ * as home shares and dropped from the copy.
+ */
+function isHomeShare(target: string): boolean {
+  return under(target, realHome()) && !under(target, stateDir());
 }
 
 /**
@@ -52,10 +62,14 @@ function intoRealHome(target: string): boolean {
  * Links into the real home are left out entirely: `ensureSkeleton` puts them
  * back from dst's configuration, which is the current answer to what is
  * shared, while src's links are a snapshot of whatever the config said the day
- * src was built. Any other symlink is dereferenced rather than recreated,
- * because a link is precisely how dst would stay tied to src.
+ * src was built. Every other link is recreated pointing at dst's own copy —
+ * see `retarget`.
+ *
+ * Bytes go into `into`, a staging directory, while links are written against
+ * `dst`, where the staging directory is about to be renamed: a link pointing
+ * into `.cp-dst.1234` would dangle the moment the copy succeeded.
  */
-function copyTree(src: string, dst: string, result: CopyResult): void {
+function copyTree(src: string, into: string, dst: string, result: CopyResult): void {
   const volatile = new Set(volatilePaths());
 
   const copyFile = (from: string, to: string): void => {
@@ -66,45 +80,21 @@ function copyTree(src: string, dst: string, result: CopyResult): void {
     result.files++;
   };
 
-  /** Copy what a symlink pointed at, so dst holds content instead of a tie to src. */
-  const deref = (target: string, to: string, rel: string, depth: number): void => {
-    if (depth >= MAX_DEPTH) {
-      result.skipped.push(rel);
-      return;
-    }
-    let st: fs.Stats;
-    try {
-      st = fs.statSync(target); // follows the chain; throws on a broken link
-    } catch {
-      result.skipped.push(rel);
-      return;
-    }
-    if (st.isFile()) {
-      fs.mkdirSync(path.dirname(to), { recursive: true });
-      copyFile(target, to);
-      return;
-    }
-    if (!st.isDirectory()) {
-      result.skipped.push(rel);
-      return;
-    }
-    fs.mkdirSync(to, { recursive: true });
-    for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
-      const childTarget = path.join(target, entry.name);
-      const childTo = path.join(to, entry.name);
-      const childRel = `${rel}/${entry.name}`;
-      if (entry.isSymbolicLink()) {
-        const next = path.resolve(target, fs.readlinkSync(childTarget));
-        if (intoRealHome(next)) continue;
-        deref(next, childTo, childRel, depth + 1);
-      } else if (entry.isDirectory()) {
-        deref(childTarget, childTo, childRel, depth + 1);
-      } else if (entry.isFile()) {
-        copyFile(childTarget, childTo);
-      } else {
-        result.skipped.push(childRel);
-      }
-    }
+  /**
+   * What a recreated link should point at.
+   *
+   * A relative link is kept verbatim: it already resolves inside the copy, and
+   * because dst is always a sibling of src under `<envs>/`, even one that
+   * climbs out lands in the same place it did before. An absolute link into src
+   * is repointed at dst, which is the whole difference between a copy and a
+   * second name for the source. Anything else — a link to /opt, say — is
+   * carried over as it was: src pointed there too, and that is not a tie
+   * between the two environments.
+   */
+  const retarget = (raw: string, target: string): string => {
+    if (!path.isAbsolute(raw)) return raw;
+    if (under(target, src)) return path.join(dst, path.relative(src, target));
+    return raw;
   };
 
   const walk = (rel: string): void => {
@@ -113,12 +103,13 @@ function copyTree(src: string, dst: string, result: CopyResult): void {
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       if (volatile.has(childRel)) continue;
       const from = path.join(src, childRel);
-      const to = path.join(dst, childRel);
+      const to = path.join(into, childRel);
 
       if (entry.isSymbolicLink()) {
-        const target = path.resolve(path.dirname(from), fs.readlinkSync(from));
-        if (intoRealHome(target)) continue; // ensureSkeleton rebuilds these
-        deref(target, to, childRel, 0);
+        const raw = fs.readlinkSync(from);
+        const target = path.resolve(path.dirname(from), raw);
+        if (isHomeShare(target)) continue; // ensureSkeleton rebuilds these
+        fs.symlinkSync(retarget(raw, target), to);
         continue;
       }
       if (entry.isDirectory()) {
@@ -220,7 +211,7 @@ export function copyEnv(srcName: string, dstName: string): CopyResult {
   try {
     fs.rmSync(staging, { recursive: true, force: true });
     fs.mkdirSync(staging, { recursive: true });
-    copyTree(src, staging, result);
+    copyTree(src, staging, dst, result);
     fs.renameSync(staging, dst);
   } catch (e) {
     fs.rmSync(staging, { recursive: true, force: true });

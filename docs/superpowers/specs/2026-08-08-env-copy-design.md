@@ -70,6 +70,12 @@ tread cp <src> <dst>     复制一个环境
 
 env 根下大半是 `syncHomeLinks` 按 allow 清单建的链接（`.ssh`、`.config/*`、`.zshrc`、kimi 的 `credentials`/`oauth`…）。这些由 dst 自己的配置层重新决定，不该从 src 抄一份快照——src 建立时的 allow 清单可能已经和现在的配置不一样了。
 
+### 3.6 环境自己就住在真 home 底下，所以"指向真 home"分不出这两类
+
+`<state>` 默认是 `~/.local/state/tread`，于是 env 内部的链接（superpowers 插件树里的 `AGENTS.md -> CLAUDE.md`）解析出来也在真 home 下。第一版实现按"target 在真 home 下就是共享链接"判定，把这些同级链接一并跳过了——`diff -r` 才发现插件树里少了文件。
+
+**推论：判定共享链接必须把 tread 的 state dir 挖掉**（`under(target, realHome()) && !under(target, stateDir())`）。同样的推论适用于测试：state dir 放在 `/tmp` 的测试永远看不见这个 bug，必须有一例把 `TREAD_HOME` 与 `TREAD_STATE_DIR` 摆成真机的嵌套拓扑。
+
 ## 4. 拷贝规则
 
 新文件 `src/copy.ts`，导出 `copyEnv(srcName, dstName): CopyResult`。
@@ -79,12 +85,20 @@ env 根下大半是 `syncHomeLinks` 按 allow 清单建的链接（`.ssh`、`.co
 | 类 | 判定 | 处理 |
 |---|---|---|
 | 1 | volatile 清单命中（§5） | 跳过，不递归 |
-| 2 | symlink 且指向真 home | 跳过——`ensureSkeleton(dst)` 会按 dst 的配置重建 |
-| 3 | 其它 symlink（指向 src 内部或第三处） | **解引用**，把目标内容拷成 dst 里的真实文件 |
-| 4 | 常规文件 / 目录 | 逐字节拷，保留权限位 |
-| — | socket / fifo / 设备节点 | 跳过 |
+| 2 | symlink 且指向真 home，但不在 `<state>` 底下（§3.6） | 跳过——`ensureSkeleton(dst)` 会按 dst 的配置重建 |
+| 3 | 其它 symlink | 重建为链接，**目标重指向 dst**（见下） |
+| 4 | 常规文件 / 目录 | 逐字节拷，显式 `chmod` 保留权限位 |
+| — | socket / fifo / 设备节点 | 跳过并计入 `CopyResult.skipped` |
 
-第 3 类解引用而不是照抄链接：留成链接就等于把 dst 钉在 src 上。解引用带深度上限（8 层）防环，超限则跳过并计入 `CopyResult.skipped`。
+第 3 类怎么重指向，取决于原链接的形态：
+
+- **相对链接**原样保留。它本来就解析到"树内的那个文件"，拷完自然指向 dst 自己的副本。即使它向上爬出 env（`../../x`），因为 dst 恒是 src 在 `<envs>/` 下的兄弟、深度相同，解析结果与原来一致。
+- **指向 src 内部的绝对链接**改成 dst 的对应路径。这一条正是"复制"与"给源环境起个别名"的分界。
+- **其它绝对链接**（比如指向 `/opt/...`）原样保留：src 本来也指那儿，这不构成两个环境之间的联系。
+
+不解引用成真实文件：插件树自带同级链接（`AGENTS.md -> CLAUDE.md`），解引用会把同一份内容存两遍，还丢掉了插件目录的原貌。
+
+写链接时要注意目标是**最终 dst 路径**而不是 staging 目录（§7）——指进 `.cp-dst.1234` 的链接会在 rename 成功那一刻变成断链。
 
 拷完依次做三件事：
 
@@ -167,11 +181,12 @@ skipped sessions and caches · 6 paths rewritten
 ## 10. 测试（`test/copy.test.ts`，Chinese 注释，沿用 `TREAD_STATE_DIR` 临时目录模式）
 
 1. **改 src 不影响 dst**：cp 之后在 src 里新建文件、改文件、删文件，dst 三项都不变。
-2. **不继承**（可执行断言）：遍历 dst 全部常规文本文件，没有任何一个含 srcRoot 字符串。
+2. **不继承**（可执行断言）：遍历 dst 全部常规文本文件与全部链接，没有任何一个含 srcRoot 字符串。
 3. **home 链接是链接**：dst 里 allow 清单上的路径仍是 symlink，且 `readlink` 指向真 home，不指向 src。
 4. **精确匹配**：`.claude/cache` 不在 dst，`.claude/plugins/cache` 在 dst 且内容一致。
 5. **计数相等**：逐 agent 比较 `inventory(src,a)` 与 `inventory(dst,a)` 的四类数量。
-6. **解引用**：src 里指向 src 内部的 symlink，在 dst 里是真实文件。
+6. **链接重指向**：指向 src 内部的绝对链接在 dst 里指向 dst 自己的对应文件。
+6a. **真机拓扑**（§3.6）：把 `TREAD_HOME` 与 `TREAD_STATE_DIR` 摆成 env 位于真 home 底下的形状，断言同级相对链接跟着走、绝对内部链接被重指向、而真正的 home 共享仍指向真 home。
 7. **`.tread`**：`config.yaml` 内容一致；`sync.json` 是重新生成的（内容对应 dst 的路径）。
 8. **错误路径**：dst 已存在 / dst 名字非法 / src 不存在 → 抛错，且 `<envs>` 下不留 `.cp-*` 临时目录。
 9. **非常规文件**：src 里有 fifo 时 cp 不失败（socket 不便在测试里造，fifo 同类）。

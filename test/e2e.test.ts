@@ -60,6 +60,34 @@ describe("e2e", () => {
     expect(fs.existsSync(root)).toBe(false);
   }, 30000);
 
+  test("cp 出来的环境立刻能用，且与源环境无关", async () => {
+    await tread(["create", "cp-src"]);
+    const src = path.join(state, "envs", "cp-src");
+    const sd = path.join(src, ".claude/skills/demo");
+    fs.mkdirSync(sd, { recursive: true });
+    fs.writeFileSync(
+      path.join(sd, "SKILL.md"),
+      `---\nname: demo\ndescription: d\n---\ninstalled under ${src}\n`,
+    );
+
+    const cp = await tread(["cp", "cp-src", "cp-dst"]);
+    expect(cp.code).toBe(0);
+    expect(cp.out).toContain("copied  cp-src → cp-dst");
+
+    // the copy prints the very table `status` would, so they must agree
+    const status = await tread(["status", "cp-dst"]);
+    expect(cp.out).toContain(status.out.trimEnd());
+    expect((await tread(["ls", "--plain"])).out).toContain("cp-dst");
+
+    const dst = path.join(state, "envs", "cp-dst");
+    const copied = fs.readFileSync(path.join(dst, ".claude/skills/demo/SKILL.md"), "utf8");
+    expect(copied).toContain(`installed under ${dst}`);
+    expect(copied).not.toContain(src);
+
+    // a second copy onto the same name is an error, not a silent merge
+    expect((await tread(["cp", "cp-src", "cp-dst"])).code).toBe(1);
+  }, 30000);
+
   test("exec 透传退出码", async () => {
     await tread(["create", "x"]);
     expect((await tread(["exec", "x", "--", "false"])).code).toBe(1);

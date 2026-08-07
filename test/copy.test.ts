@@ -130,10 +130,12 @@ describe("copyEnv", () => {
     }
   });
 
-  test("指向 env 内部的 symlink 被解引用成真实文件，权限位保留", () => {
-    const p = path.join(envDir("dst"), ".claude/skills/demo/run.mjs");
-    expect(fs.lstatSync(p).isSymbolicLink()).toBe(false);
+  test("指向 env 内部的 symlink 跟着走，但重指向 dst 自己的文件", () => {
+    const dst = envDir("dst");
+    const p = path.join(dst, ".claude/skills/demo/run.mjs");
+    expect(fs.readlinkSync(p)).toBe(path.join(dst, ".fintopia/start.mjs"));
     expect(fs.readFileSync(p, "utf8")).toContain("process.exit(0)");
+    // read through the link: the copied target kept its exec bit
     expect(fs.statSync(p).mode & 0o111).toBeGreaterThan(0);
   });
 
@@ -178,13 +180,16 @@ describe("copyEnv", () => {
     expect(fs.readdirSync(envsDir()).filter((n) => n.startsWith(".cp-"))).toEqual([]);
   });
 
-  test("dst 里没有任何文件含 src 的绝对路径", () => {
+  test("dst 里没有任何文件、任何链接指向 src", () => {
     const src = envDir("src");
     const bad: string[] = [];
     const walk = (dir: string) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const p = path.join(dir, e.name);
-        if (e.isSymbolicLink()) continue; // links point at the real home
+        if (e.isSymbolicLink()) {
+          if (fs.readlinkSync(p).includes(src)) bad.push(p);
+          continue;
+        }
         if (e.isDirectory()) {
           walk(p);
           continue;
@@ -237,6 +242,49 @@ describe("copyEnv", () => {
       expect(listEnvs()).not.toContain(".cp-leftover.999");
     } finally {
       fs.rmSync(leftover, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * The real topology: `<state>` lives under the real home, so a link to the
+ * environment's own sibling file also points "into the real home". Reproduced
+ * here because the tests above put the state dir in /tmp, where the two cases
+ * happen to be distinguishable and the bug is invisible.
+ */
+describe("环境自己就在真 home 底下", () => {
+  test("env 内部的链接不被当成 home 共享，跟着走且指向 dst", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tread-home-"));
+    const prevHome = process.env.TREAD_HOME;
+    const prevState = process.env.TREAD_STATE_DIR;
+    process.env.TREAD_HOME = home;
+    process.env.TREAD_STATE_DIR = path.join(home, ".local/state/tread");
+    try {
+      fs.writeFileSync(path.join(home, ".zshrc"), "# the real one\n");
+      const src = createEnv("nested");
+      const d = path.join(src, ".claude/plugins/cache/p/1.0.0");
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, "CLAUDE.md"), "guide\n");
+      // exactly what superpowers ships: a sibling alias, relative
+      fs.symlinkSync("CLAUDE.md", path.join(d, "AGENTS.md"));
+      fs.writeFileSync(path.join(src, ".claude/settings.json"), "{}\n");
+      fs.symlinkSync(path.join(src, ".claude/settings.json"), path.join(d, "abs.json"));
+
+      const r = copyEnv("nested", "nested2");
+      const dd = path.join(r.root, ".claude/plugins/cache/p/1.0.0");
+      expect(fs.readlinkSync(path.join(dd, "AGENTS.md"))).toBe("CLAUDE.md");
+      expect(fs.readFileSync(path.join(dd, "AGENTS.md"), "utf8")).toBe("guide\n");
+      // an absolute link into src is repointed at dst's own copy
+      expect(fs.readlinkSync(path.join(dd, "abs.json")))
+        .toBe(path.join(r.root, ".claude/settings.json"));
+      // while a genuine home share is still a link into the real home
+      expect(fs.readlinkSync(path.join(r.root, ".zshrc"))).toBe(path.join(home, ".zshrc"));
+    } finally {
+      if (prevHome === undefined) delete process.env.TREAD_HOME;
+      else process.env.TREAD_HOME = prevHome;
+      if (prevState === undefined) delete process.env.TREAD_STATE_DIR;
+      else process.env.TREAD_STATE_DIR = prevState;
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });

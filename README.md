@@ -130,6 +130,7 @@ tread exec work --home -- clawhub install <name>
 ```
 tread init <zsh|bash|fish|starship>   打印 shell 集成
 tread create <name>                   创建环境
+tread cp <src> <dst>                  复制一个环境
 tread use <name> / deactivate         激活 / 退出
 tread ls                              浏览并切换环境（TUI）
 tread status [env]                    每个环境装了多少
@@ -147,6 +148,30 @@ tread doctor [env] [--fix]            体检（给了 env 就只查这一个）
 ```
 
 `ls` 和 `show` 是 TUI（圆角边框、键盘 + 鼠标、随窗口自适应）。非 TTY、`--plain`、或终端小于 30×8 时自动退回纯文本。
+
+## cp 复制的是工具链，不是快照
+
+`cp` 把 skills / plugins / MCP / hooks / commands 以及 agent 自己建的目录逐字节拷过去，
+会话记录、历史、日志、遥测、缓存不拷——实测一个 26M 的环境里这些占了一半，而它们指的是
+另一个环境做过的事。拷完直接把新环境的 `status` 表打出来，与 `tread status <dst>` 逐字一致。
+
+**复制完两个环境彻底无关。** 这需要两件事，光"别用 symlink"不够：
+
+指向真 home 的链接由新环境**自己的配置**重新生成，而不是从源环境抄一份——源环境建立时的
+allow 清单可能早就和现在的配置不一样了。其余链接照旧是链接，但指向源环境内部的绝对链接会被
+改成指向新环境自己的副本，否则新环境只是旧环境的一个别名。判断"哪些是共享链接"要把
+`~/.local/state/tread` 挖掉：环境自己就住在真 home 底下，不挖的话插件树里
+`AGENTS.md -> CLAUDE.md` 这种同级链接也会被误判成共享而丢掉。
+
+文件内容里的源环境**绝对路径会被重写**。agent 会把自己的 config dir 硬编码进它写的东西：
+claude 的 hook 命令与 `installed_plugins.json`、cursor 的 `hooks.json`、kimi 的
+`extra_skill_dirs`，还有某个 skill 自己的安装脚本算出来的路径。不重写的话新环境会静默地去读
+旧环境的目录——你在新环境改了 hook，跑起来还是老那个。只替换完整绝对路径，绝不替换环境**名字**：
+`test` 这种名字会在正文里到处误伤。
+
+排除清单按 **env 相对路径精确匹配**，不按目录名：`.claude/cache` 是垃圾，
+`.claude/plugins/cache` 是插件本体（那 9.3M）。按名字匹配会把插件删光，而 `status` 表
+照样显示插件在装——因为计数读的是清单文件。
 
 ## MCP 连通状态
 
@@ -192,7 +217,7 @@ starship 只渲染顶层 `format` 点到名的模块，所以光加 `[env_var.tr
 
 ```bash
 bun install
-bun test              # 129 个测试，含 e2e
+bun test              # 192 个测试，含 e2e
 bun run typecheck
 bun run src/index.ts  # 直接从源码跑
 ```
