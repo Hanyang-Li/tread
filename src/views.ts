@@ -30,7 +30,9 @@ function counts(inv: Inventory): (string | null)[] {
 export function statusOne(envRoot: string, name: string, active: boolean): string {
   const c = palette();
   const when = relTime(lastUsed()[name] ?? null);
-  const head = active ? `${c.brightGreen("active")} · ${when}` : when;
+  // dim only the timestamp: wrapping the whole head would dim the green too,
+  // and the reset that ends "active" would drop the dim from what follows
+  const head = active ? `${c.green("active")} · ${c.dim(when)}` : c.dim(when);
   const rows: string[][] = [["", "skills", "plugins", "mcp", "hooks", ""]];
   for (const a of AGENTS) {
     const inv = inventory(envRoot, a);
@@ -42,7 +44,7 @@ export function statusOne(envRoot: string, name: string, active: boolean): strin
     ]);
   }
   const body = table(rows, { align: ["left", "right", "right", "right", "right", "left"] });
-  return [`${c.bold(name)}    ${c.dim(head)}`, "", ...body, ""].join("\n");
+  return [`${c.bold(name)}    ${head}`, "", ...body, ""].join("\n");
 }
 
 /** `tread status` — every environment, one line each. */
@@ -69,7 +71,7 @@ export function statusAll(activeName: string | null): string {
     rows.push([
       n,
       String(s), String(p), String(m), String(h),
-      n === activeName ? c.brightGreen("active") : c.dim(relTime(used[n] ?? null)),
+      n === activeName ? c.green("active") : c.dim(relTime(used[n] ?? null)),
     ]);
   }
   return (
