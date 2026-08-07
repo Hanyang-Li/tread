@@ -50,7 +50,8 @@ describe("e2e", () => {
     expect(list.out).toContain("2.0.0");
 
     const st = await tread(["status", "e2e"]);
-    expect(st.out).toMatch(/claude\s+1\b/);
+    // demo plus the guide tread installs into every environment
+    expect(st.out).toMatch(/claude\s+2\b/);
 
     const p = await tread(["path", "e2e", "claude", "skills"]);
     expect(p.out.trim()).toBe(path.join(root, ".claude/skills"));
@@ -193,17 +194,15 @@ describe("e2e", () => {
     expect(out).toContain("RESTORED=yes");
   }, 30000);
 
-  test("shim 对每个 agent 及别名都存在，且只有需要的才动 HOME", async () => {
+  test("shim 对每个 agent 及别名都存在，且都把 HOME 指向环境", async () => {
     await tread(["_export", "use", "x"]);
     const dir = path.join(state, "shims");
-    for (const n of ["claude", "cursor-agent", "agent", "kimi"]) {
-      expect(fs.existsSync(path.join(dir, n))).toBe(true);
-    }
     const home = (n: string) =>
       fs.readFileSync(path.join(dir, n), "utf8").includes('HOME="$TREAD_ENV_DIR"');
-    expect(home("cursor-agent")).toBe(true);
-    expect(home("kimi")).toBe(true);
-    expect(home("claude")).toBe(false);
+    for (const n of ["claude", "cursor-agent", "agent", "kimi"]) {
+      expect(fs.existsSync(path.join(dir, n))).toBe(true);
+      expect(home(n)).toBe(true);
+    }
   }, 20000);
 
   test("use / deactivate 成功时在 stderr 上给出提示", async () => {

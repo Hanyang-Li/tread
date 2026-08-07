@@ -2,10 +2,21 @@ import os from "node:os";
 import path from "node:path";
 import { AGENT_SPECS, AGENTS, type Agent } from "./agents.ts";
 
-export const realHome = os.homedir();
+/**
+ * The user's actual home, even when tread is running inside an environment.
+ *
+ * Agent shims replace HOME with the env root, so `os.homedir()` — which reads
+ * $HOME, as does `os.userInfo()` under bun — answers with the environment when
+ * an agent shells out to `tread`. That made every path tread derives from home
+ * point into the env: `tread ls` inside claude reported no environments at all.
+ * The shim stashes the real value in TREAD_HOME just before overwriting HOME.
+ */
+export function realHome(): string {
+  return process.env.TREAD_HOME || os.homedir();
+}
 
 export function stateDir(): string {
-  return process.env.TREAD_STATE_DIR ?? path.join(realHome, ".local/state/tread");
+  return process.env.TREAD_STATE_DIR ?? path.join(realHome(), ".local/state/tread");
 }
 
 export function envsDir(): string {
@@ -59,7 +70,8 @@ export function skillsDir(envRoot: string, a: Agent): string {
  * for the agent process alone.
  */
 export function activationEnv(envRoot: string): Record<string, string> {
-  const out: Record<string, string> = { TREAD_ENV_DIR: envRoot };
+  // carried so tread still knows the real home once a shim moves HOME
+  const out: Record<string, string> = { TREAD_ENV_DIR: envRoot, TREAD_HOME: realHome() };
   for (const a of AGENTS) {
     Object.assign(out, AGENT_SPECS[a].envVars(agentDir(envRoot, a)));
   }

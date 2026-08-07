@@ -3,11 +3,15 @@ import path from "node:path";
 import { AGENTS, AGENT_SPECS, isAgent, shimNames, type Agent } from "./agents.ts";
 import {
   createEnv, ensureSkeleton, lastUsed, listEnvs, removeEnv, requireEnv, resolveEnv,
+  syncHomeLinks,
 } from "./env.ts";
-import { activationEnv, agentDir, envDir, shimsDir, skillsDir, stateDir } from "./paths.ts";
+import {
+  activationEnv, agentDir, envDir, realHome, shimsDir, skillsDir, stateDir,
+} from "./paths.ts";
 import { realBinary, shimsHealthy, writeShims } from "./shims.ts";
 import { deactivateLines, exportLines, initSnippet, shellLoaded, writeInit } from "./shell.ts";
 import { colorsEnabled, color, formatError, table, tildify } from "./render.ts";
+import { VERSION } from "./version.ts";
 import {
   hooksList, isCategory, lsPlain, mcpDetail, mcpList, pluginDetail, pluginsList,
   showPlain, skillDetail, skillsList, splitTargets, statusAll, statusOne, hookDetail,
@@ -39,6 +43,10 @@ usage: tread <command> [args]
 
 tread does not install skills, plugins, MCP servers or hooks — activate an
 environment and use each agent's own tooling. It only shows you what is there.
+
+what an environment shares with your real home is an allow list. to change it:
+  ~/.config/tread/config.yaml        every environment
+  <env>/.tread/config.yaml           one environment
 `;
 
 function takeFlag(args: string[], ...names: string[]): boolean {
@@ -228,6 +236,23 @@ function doctorCommand(args: string[], out: Out): number {
   for (const name of listEnvs()) {
     const root = envDir(name);
     const issues: string[] = [];
+
+    // config is the source of truth and doctor never rewrites it: --fix only
+    // brings the environment back in line with what the config already says
+    const sync = syncHomeLinks(root, { dryRun: !fix });
+    for (const p of sync.problems) {
+      issues.push(`${tildify(p.file)}   ${p.message}`);
+    }
+    for (const rel of sync.missing) {
+      issues.push(`${rel}   allowed but not in ${tildify(realHome())}`);
+    }
+    if (sync.added.length > 0) {
+      issues.push(`${sync.added.length} path${sync.added.length === 1 ? "" : "s"} allowed but not linked yet`);
+    }
+    if (sync.pruned.length > 0) {
+      issues.push(`${sync.pruned.length} link${sync.pruned.length === 1 ? "" : "s"} no longer allowed`);
+    }
+
     for (const n of ["credentials", "oauth"]) {
       const link = path.join(agentDir(root, "kimi"), n);
       if (isBrokenLink(link)) {
@@ -409,7 +434,7 @@ export async function runCommand(argv: string[], out: Out, err: Out = out): Prom
 
       case "--version":
       case "-v":
-        out("tread 0.2.0\n");
+        out(`tread ${VERSION}\n`);
         return 0;
 
       case undefined:

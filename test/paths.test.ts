@@ -28,12 +28,32 @@ describe("paths", () => {
     expect(p.skillsDir("/e", "cursor")).toBe("/e/.cursor/skills");
   });
 
-  test("activationEnv 给出全部变量", () => {
+  test("activationEnv 给出全部变量，含真 home 的传递", () => {
     const e = p.activationEnv("/e/work");
     expect(e.TREAD_ENV_DIR).toBe("/e/work");
+    expect(e.TREAD_HOME).toBe(p.realHome());
     expect(e.CLAUDE_CONFIG_DIR).toBe("/e/work/.claude");
     expect(e.CURSOR_CONFIG_DIR).toBe("/e/work/.cursor");
     expect(e.CURSOR_DATA_DIR).toBe("/e/work/.cursor");
     expect(e.KIMI_CODE_HOME).toBe("/e/work/.kimi-code");
+  });
+
+  test("realHome 认 TREAD_HOME，不被 shim 移动过的 HOME 骗到", () => {
+    const prevHome = process.env.HOME;
+    const prevState = process.env.TREAD_STATE_DIR;
+    try {
+      // exactly what an agent shelling out to tread sees
+      process.env.HOME = "/e/work";
+      process.env.TREAD_HOME = "/real/home";
+      expect(p.realHome()).toBe("/real/home");
+      delete process.env.TREAD_STATE_DIR;
+      // the symptom this fixes: state resolved into the env, so `tread ls`
+      // reported no environments at all
+      expect(p.stateDir()).toBe("/real/home/.local/state/tread");
+    } finally {
+      delete process.env.TREAD_HOME;
+      if (prevHome !== undefined) process.env.HOME = prevHome;
+      if (prevState !== undefined) process.env.TREAD_STATE_DIR = prevState;
+    }
   });
 });

@@ -41,38 +41,62 @@ tread deactivate    # 回到你原本的 ~/.claude 等
 
 激活做两件事：export 各 agent 的 config dir 变量，并把 `<state>/shims` 放到 `PATH` 最前。
 
-| agent | 变量 | 是否重定向 HOME | 环境内位置 |
-|---|---|---|---|
-| claude | `CLAUDE_CONFIG_DIR` | 否 | `<env>/.claude/` |
-| cursor | `CURSOR_CONFIG_DIR` + `CURSOR_DATA_DIR` | **是** | `<env>/.cursor/` |
-| kimi | `KIMI_CODE_HOME` | **是** | `<env>/.kimi-code/`、`<env>/.agents/skills/` |
+| agent | 变量 | 环境内位置 |
+|---|---|---|
+| claude | `CLAUDE_CONFIG_DIR` | `<env>/.claude/` |
+| cursor | `CURSOR_CONFIG_DIR` + `CURSOR_DATA_DIR` | `<env>/.cursor/` |
+| kimi | `KIMI_CODE_HOME` | `<env>/.kimi-code/`、`<env>/.agents/skills/` |
 
-**为什么需要 shim 和 HOME 重定向。** cursor 的 `mcp.json` 与 `hooks.json` 是用硬编码的
-`join(homedir(), ".cursor", …)` 解析的，完全无视 `CURSOR_CONFIG_DIR`；kimi 的用户级 skill
-在 `~/.agents/skills`。实测：只设 config dir 变量时，真 home 的 MCP 服务器和 28 个 skill
-会原封不动带进环境；把 `HOME` 指向环境后归零。
+**为什么光有 config dir 变量不够。** 变量只管得住 agent **自己**解析的路径，管不住它
+跑起来的第三方代码。cursor 的 `mcp.json` 与 `hooks.json` 是硬编码 `join(homedir(),
+".cursor", …)`，完全无视 `CURSOR_CONFIG_DIR`；kimi 的用户级 skill 在 `~/.agents/skills`；
+claude 自己确实处处遵守 `CLAUDE_CONFIG_DIR`，但一个装 hook 的 skill 会去算
+`join(homedir(), ".claude", "settings.json")`，照样写进真 home。
 
-HOME 只对需要它的 agent 进程生效——shim 里设置，不会污染你的 shell，所以 `git`、`ssh`、
-`npm` 照常工作。claude 把一切都放在 config dir 内，因此不动它的 HOME。
+所以三个 agent 的 shim **都**把 `HOME` 指向环境根。HOME 只对 agent 进程生效——在 shim 里
+设置，不污染你的 shell。
 
-环境目录做成 home 的形状，并把真 home 的内容 symlink 进来——**默认全部共享，只拒绝该隔离的**：
+环境目录做成 home 的形状，把真 home 里**被允许的部分** symlink 进来：
 
 ```
-拒绝：.claude  .cursor  .kimi-code  .agents  .local/state
-      Library/Application Support/Cursor/User/globalStorage   ← macOS
-共享：其余一切（.ssh  .config  .zshrc  .npmrc  .cargo  …）
+默认共享：.gitconfig  .ssh  .config  .cache  .npmrc  .cargo  .rustup
+          .asdf  .tool-versions  .docker  .kube  .aws  …（见 defaultAllow）
+永不共享：.claude  .cursor  .kimi-code  .agents  .local/state
+          .tread  .config/tread
+          Library/Application Support/Cursor/User/globalStorage   ← macOS
 ```
 
-拒绝项支持嵌套：最后那条是 Cursor 桌面版的状态库，缓存着 skill / plugin 索引，
-共享它会把你装过的每个 skill 都带进来；但整个 `Library` 又是 cursor 登录态所在，
-所以只挖掉这一个子路径，它的祖先照常镜像、兄弟目录照常共享。拒绝项由 agent 适配器
-声明并区分平台，注册新 agent 时跟着它一起走。
+环境隔离的是 agent 工具链，不是整个账号——agent 仍然要 shell 出去跑 git、ssh、npm，
+所以共享面必须够宽。清单由 tread 自带：让每个用户自己踩一遍"原来 git 要这个"，
+收益和成本不成比例。
 
-用拒绝表而不是允许表，是因为允许表会漏掉你以后才装的工具。链接在**每次激活时重新同步**，
-新增的配置自动接上，真 home 里删掉的会被摘除。环境里自己建的真实文件永远优先，不会被链接覆盖。
+**没在清单上的东西留在环境里。** 这正是关键性质：某个 skill 自己建的状态目录天然隔离，
+tread 不需要预先知道它叫什么名字。
 
-`.local` 不整体链接（tread 自己的状态在里面，链了会把环境套进自己），改为往下一层
-链 `bin`、`share` 等，只跳过 `state`。
+改共享范围写 YAML，是**补丁**不是全量列表——这样 tread 的默认清单以后变大，你也能吃到：
+
+```yaml
+# ~/.config/tread/config.yaml     所有环境
+# <env>/.tread/config.yaml        单个环境
+allow:
+  extra:  [.my-tool]
+  remove: [.cache]
+```
+
+三层叠加：内置默认 → 全局 → 单环境。层内 `remove` 压过 `extra`，跨层后一层的 `extra`
+可以把前一层 `remove` 的加回来。想彻底不要默认清单就用 `replace:`。
+
+"永不共享"那几条配置碰不到（写了 `doctor` 会报）：agent 目录必须是环境里的真目录，
+否则隔离无从谈起；`.local/state` 是 tread 自己的状态，链了会把环境套进自己；
+`.tread` 和 `.config/tread` 是配置本身，被链接覆盖就自举失败。
+
+拒绝项支持嵌套：`.config` 整体共享，但里面的 `tread` 子目录挖掉——这一层改用镜像真目录
+而不是整个 symlink，兄弟目录照常共享。macOS 那条同理，是 Cursor 桌面版缓存 skill/plugin
+索引的状态库。
+
+链接在**每次激活时重新同步**。环境自己记一份清单（`<env>/.tread/sync.json`），所以从配置里
+删掉一项会真的把链接摘掉——只收紧配置却不摘链接，是白名单最坏的失败方式。摘除只动指向真
+home 的 symlink 和空目录，绝不 `rm -r`：环境里自己建的真实文件永远优先。
 
 ## 装东西：用各 agent 原生的工具
 
@@ -96,6 +120,10 @@ $EDITOR "$(tread path work claude)/settings.json"
 tread exec work --home -- skills add vercel-labs/agent-skills -g -a claude-code
 tread exec work --home -- clawhub install <name>
 ```
+
+每个环境都自带一个 `tread` skill，三个 agent 的 skills 目录里各装一份，每次激活跟着更新。
+里面写清了整套 CLI、各目录位置、以及"你的 `$HOME` 不是用户的真 home"——agent 最容易
+猜错的就是这件事，与其指望用户去解释，不如把说明放在它手边。
 
 ## 命令
 

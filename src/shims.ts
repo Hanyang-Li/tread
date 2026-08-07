@@ -46,7 +46,10 @@ function script(name: string, agent: Agent, real: string | null): string {
   if (spec.needsHome) {
     lines.push(
       "# this agent resolves part of its config through $HOME, so the env dir",
-      "# has to become HOME for the agent process only",
+      "# has to become HOME for the agent process only. stash the real one so",
+      "# a `tread` the agent shells out to can still find the user's home.",
+      'TREAD_HOME="${TREAD_HOME:-$HOME}"',
+      "export TREAD_HOME",
       'HOME="$TREAD_ENV_DIR"',
       "export HOME",
       "",
@@ -77,17 +80,34 @@ export function writeShims(): string[] {
   return written;
 }
 
-/** True when every shim exists and still points at a live binary. */
-export function shimsHealthy(): boolean {
+/**
+ * Shims whose contents no longer match what tread would write.
+ *
+ * Comparing the whole body, not just whether the file is there and `real=`
+ * resolves: after tread itself changes how a shim is generated — a new
+ * isolation variable, an agent that now needs HOME moved — every existing
+ * shim is silently out of date, and a check that only looked for missing
+ * files would report a clean bill of health.
+ */
+export function shimDrift(): { name: string; state: "missing" | "stale" }[] {
   const dir = shimsDir();
-  for (const { name } of shimNames()) {
+  const out: { name: string; state: "missing" | "stale" }[] = [];
+  for (const { name, agent } of shimNames()) {
     const p = path.join(dir, name);
-    if (!fs.existsSync(p)) return false;
-    const body = fs.readFileSync(p, "utf8");
-    const m = body.match(/^real="(.*)"$/m);
-    if (m && m[1] && !fs.existsSync(m[1])) return false;
+    if (!fs.existsSync(p)) {
+      out.push({ name, state: "missing" });
+      continue;
+    }
+    if (fs.readFileSync(p, "utf8") !== script(name, agent, realBinary(name))) {
+      out.push({ name, state: "stale" });
+    }
   }
-  return true;
+  return out;
+}
+
+/** True when every shim exists and matches what tread would generate today. */
+export function shimsHealthy(): boolean {
+  return shimDrift().length === 0;
 }
 
 export { agentDir };

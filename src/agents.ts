@@ -13,12 +13,16 @@ export interface AgentSpec {
   /**
    * Whether the agent must be launched with HOME pointed at the env root.
    *
-   * Measured, not assumed. cursor resolves mcp.json and hooks.json through a
-   * hardcoded `join(homedir(), ".cursor", …)` and ignores CURSOR_CONFIG_DIR
-   * for them; kimi discovers user skills under `~/.agents/skills`. Both leak
-   * the real home's tooling unless HOME moves. claude keeps everything under
-   * CLAUDE_CONFIG_DIR, so it needs no HOME rewrite — and gets none, to keep
-   * the blast radius as small as the evidence allows.
+   * True for all three, and for one shared reason: an agent's own config
+   * variable only governs the paths the agent itself resolves, while every
+   * one of them runs third-party code that goes through homedir() instead.
+   * cursor reads mcp.json and hooks.json from a hardcoded
+   * `join(homedir(), ".cursor", …)`; kimi discovers user skills under
+   * `~/.agents/skills`; claude does honour CLAUDE_CONFIG_DIR throughout, but
+   * a skill installing a hook computes `join(homedir(), ".claude",
+   * "settings.json")` and writes to the real home no matter what
+   * CLAUDE_CONFIG_DIR says. HOME is the only lever that reaches code tread
+   * does not control.
    */
   needsHome: boolean;
   /**
@@ -35,8 +39,11 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     bin: "claude",
     aliases: [],
     dir: ".claude",
+    // CLAUDE_CONFIG_DIR stays even though HOME now covers it: `tread use`
+    // exports it into the shell, so a claude started by absolute path —
+    // bypassing the shim entirely — is still redirected.
     envVars: (d) => ({ CLAUDE_CONFIG_DIR: d }),
-    needsHome: false,
+    needsHome: true,
     isolate: () => [],
   },
   cursor: {

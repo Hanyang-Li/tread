@@ -100,10 +100,11 @@ describe("commands", () => {
     expect(out).toContain("work");
   });
 
-  test("skills 空环境提示为 0 而非报错", async () => {
+  test("新环境只有 tread 自带的指南，且不报错", async () => {
     const { code, out } = await run(["skills", "work", "claude"]);
     expect(code).toBe(0);
-    expect(out).toContain("0 skills");
+    expect(out).toContain("tread");
+    expect(out).toContain("1 skill");
   });
 
   test("skills 不给 agent 时列出全部三个", async () => {
@@ -123,7 +124,8 @@ describe("commands", () => {
     const { out } = await run(["skills", "work", "claude"]);
     expect(out).toContain("demo");
     expect(out).toContain("2.0.0");
-    expect(out).toContain("1 skill");
+    // the bundled guide is always there too
+    expect(out).toContain("2 skills");
   });
 
   test("skill 详情页", async () => {
