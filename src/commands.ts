@@ -6,8 +6,9 @@ import {
   syncHomeLinks,
 } from "./env.ts";
 import {
-  activationEnv, agentDir, envDir, realHome, shimsDir, skillsDir, stateDir,
+  activationEnv, agentDir, envDir, realHome, shimsDir, skillsDir, stateDir, syncLockFile,
 } from "./paths.ts";
+import { clearStale, staleLock } from "./lock.ts";
 import { copyEnv } from "./copy.ts";
 import { realBinary, shimsHealthy, writeShims } from "./shims.ts";
 import { deactivateLines, exportLines, initSnippet, shellLoaded, writeInit } from "./shell.ts";
@@ -275,6 +276,15 @@ function doctorCommand(args: string[], out: Out): number {
     const issues: Issue[] = [];
     // what --fix actually repaired, as opposed to what it only reported
     const found = (text: string, fixed = fix) => issues.push({ text, fixed });
+
+    // before the sync, which would otherwise queue behind this lock: one left
+    // by a process that is gone makes the next activation wait out the full
+    // timeout and then fail, for nothing
+    const lock = syncLockFile(root);
+    if (staleLock(lock)) {
+      found(`.tread/sync.lock   left behind by a process that is gone`);
+      if (fix) clearStale(lock);
+    }
 
     // config is the source of truth and doctor never rewrites it: --fix only
     // brings the environment back in line with what the config already says,

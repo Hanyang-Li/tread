@@ -220,6 +220,45 @@ describe("commands", () => {
     expect((await run(["doctor", "other"])).out).toMatch(/^other\s+ok$/m);
   });
 
+  test("doctor 报告被遗弃的 sync 锁，--fix 清掉它", async () => {
+    const lock = path.join(tmp, "state/envs/other/.tread/sync.lock");
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    const dead = () =>
+      fs.writeFileSync(
+        lock,
+        JSON.stringify({ pid: 999_999, host: os.hostname(), at: Date.now() }),
+      );
+
+    dead();
+    const { out } = await run(["doctor", "other"]);
+    expect(out).toContain("sync.lock");
+    // reporting only: a plain doctor never writes
+    expect(fs.existsSync(lock)).toBe(true);
+
+    dead();
+    await run(["doctor", "other", "--fix"]);
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  test("doctor 不碰活着的锁", async () => {
+    const lock = path.join(tmp, "state/envs/other/.tread/sync.lock");
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(
+      lock,
+      JSON.stringify({ pid: process.ppid, host: os.hostname(), at: Date.now() }),
+    );
+    const prev = process.env.TREAD_LOCK_TIMEOUT_MS;
+    process.env.TREAD_LOCK_TIMEOUT_MS = "200";
+    try {
+      const { out } = await run(["doctor", "other"]);
+      expect(out).not.toContain("sync.lock");
+      expect(fs.existsSync(lock)).toBe(true);
+    } finally {
+      process.env.TREAD_LOCK_TIMEOUT_MS = prev;
+      fs.rmSync(lock, { force: true });
+    }
+  });
+
   test("help 与未知命令", async () => {
     expect((await run(["help"])).out).toContain("usage: tread");
     const r = await run(["frobnicate"]);
