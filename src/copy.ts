@@ -1,0 +1,168 @@
+import fs from "node:fs";
+import path from "node:path";
+import { AGENTS, AGENT_SPECS } from "./agents.ts";
+import { ensureSkeleton, requireEnv } from "./env.ts";
+import { envDir, envsDir, realHome } from "./paths.ts";
+
+/** How far a chain of dereferenced symlinks may go before we give up. */
+const MAX_DEPTH = 8;
+
+/**
+ * Env-relative paths a copy leaves behind, beyond the per-agent lists.
+ *
+ * Exact paths, not names — see `AgentSpec.volatile` for why that distinction
+ * decides whether the plugins survive.
+ */
+const SHARED_VOLATILE = [
+  ".tread/sync.json", // regenerated for dst; src's copy is src's own ledger
+  ".local/state", // tread's state dir, plus gh and claude lock files
+  "Library/Caches", // cursor's compile cache
+  "Library/Application Support", // cursor desktop's skill index db, clawhub state
+];
+
+export function volatilePaths(): string[] {
+  const out = [...SHARED_VOLATILE];
+  for (const a of AGENTS) {
+    for (const rel of AGENT_SPECS[a].volatile) {
+      out.push(`${AGENT_SPECS[a].dir}/${rel}`);
+    }
+  }
+  return out;
+}
+
+export interface CopyResult {
+  /** The new environment's root. */
+  root: string;
+  files: number;
+  rewritten: number;
+  /** env-relative paths left behind: odd file types, too deep, too big, unwritable */
+  skipped: string[];
+}
+
+function intoRealHome(target: string): boolean {
+  return target === realHome() || target.startsWith(realHome() + path.sep);
+}
+
+/**
+ * Copy an environment's own content, and only its own.
+ *
+ * Links into the real home are left out entirely: `ensureSkeleton` puts them
+ * back from dst's configuration, which is the current answer to what is
+ * shared, while src's links are a snapshot of whatever the config said the day
+ * src was built. Any other symlink is dereferenced rather than recreated,
+ * because a link is precisely how dst would stay tied to src.
+ */
+function copyTree(src: string, dst: string, result: CopyResult): void {
+  const volatile = new Set(volatilePaths());
+
+  const copyFile = (from: string, to: string): void => {
+    fs.copyFileSync(from, to);
+    // explicit, rather than trusting copyFileSync to carry the mode: hooks and
+    // skill installers are executable files, and losing +x fails at run time
+    fs.chmodSync(to, fs.statSync(from).mode & 0o7777);
+    result.files++;
+  };
+
+  /** Copy what a symlink pointed at, so dst holds content instead of a tie to src. */
+  const deref = (target: string, to: string, rel: string, depth: number): void => {
+    if (depth >= MAX_DEPTH) {
+      result.skipped.push(rel);
+      return;
+    }
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(target); // follows the chain; throws on a broken link
+    } catch {
+      result.skipped.push(rel);
+      return;
+    }
+    if (st.isFile()) {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      copyFile(target, to);
+      return;
+    }
+    if (!st.isDirectory()) {
+      result.skipped.push(rel);
+      return;
+    }
+    fs.mkdirSync(to, { recursive: true });
+    for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+      const childTarget = path.join(target, entry.name);
+      const childTo = path.join(to, entry.name);
+      const childRel = `${rel}/${entry.name}`;
+      if (entry.isSymbolicLink()) {
+        const next = path.resolve(target, fs.readlinkSync(childTarget));
+        if (intoRealHome(next)) continue;
+        deref(next, childTo, childRel, depth + 1);
+      } else if (entry.isDirectory()) {
+        deref(childTarget, childTo, childRel, depth + 1);
+      } else if (entry.isFile()) {
+        copyFile(childTarget, childTo);
+      } else {
+        result.skipped.push(childRel);
+      }
+    }
+  };
+
+  const walk = (rel: string): void => {
+    const dir = rel ? path.join(src, rel) : src;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (volatile.has(childRel)) continue;
+      const from = path.join(src, childRel);
+      const to = path.join(dst, childRel);
+
+      if (entry.isSymbolicLink()) {
+        const target = path.resolve(path.dirname(from), fs.readlinkSync(from));
+        if (intoRealHome(target)) continue; // ensureSkeleton rebuilds these
+        deref(target, to, childRel, 0);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        fs.mkdirSync(to, { recursive: true });
+        walk(childRel);
+        continue;
+      }
+      if (entry.isFile()) {
+        copyFile(from, to);
+        continue;
+      }
+      result.skipped.push(childRel); // socket, fifo, device node
+    }
+  };
+
+  walk("");
+}
+
+/**
+ * `tread cp <src> <dst>` — duplicate an environment, leaving the two unrelated.
+ */
+export function copyEnv(srcName: string, dstName: string): CopyResult {
+  const src = requireEnv(srcName);
+  const dst = envDir(dstName); // validates the name
+  if (fs.existsSync(dst)) {
+    throw new Error(
+      `"${dstName}" already exists\n\n  ${dst}\n  tread rm ${dstName}   to replace it`,
+    );
+  }
+
+  // land in a staging directory and rename: the byte copy is the long, failure
+  // prone part, and half an environment is worse than none — it shows up in
+  // `tread ls` and its status table looks perfectly plausible
+  const staging = path.join(envsDir(), `.cp-${dstName}.${process.pid}`);
+  const result: CopyResult = { root: dst, files: 0, rewritten: 0, skipped: [] };
+  try {
+    fs.rmSync(staging, { recursive: true, force: true });
+    fs.mkdirSync(staging, { recursive: true });
+    copyTree(src, staging, result);
+    fs.renameSync(staging, dst);
+  } catch (e) {
+    fs.rmSync(staging, { recursive: true, force: true });
+    throw e;
+  }
+
+  // after the rename, so the links and the generated tread skill are written
+  // against the final path rather than the staging one
+  ensureSkeleton(dst);
+  return result;
+}

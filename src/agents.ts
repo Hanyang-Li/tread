@@ -32,6 +32,16 @@ export interface AgentSpec {
    * still shared.
    */
   isolate(platform: NodeJS.Platform): string[];
+  /**
+   * Agent-dir-relative paths a copy of the environment should not carry over:
+   * session transcripts, history, logs, telemetry, caches, per-install ids.
+   *
+   * Matched as exact paths, never by name. `.claude/cache` is throwaway while
+   * `.claude/plugins/cache` holds the plugin bodies — a third of the bytes in
+   * an environment — and dropping it would still leave a status table claiming
+   * the plugins are installed, since that count comes from a manifest.
+   */
+  volatile: string[];
 }
 
 export const AGENT_SPECS: Record<Agent, AgentSpec> = {
@@ -45,6 +55,10 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     envVars: (d) => ({ CLAUDE_CONFIG_DIR: d }),
     needsHome: true,
     isolate: () => [],
+    volatile: [
+      "projects", "sessions", "session-env", "shell-snapshots",
+      "history.jsonl", "telemetry", "cache", "backups", ".last-cleanup",
+    ],
   },
   cursor: {
     bin: "cursor-agent",
@@ -61,6 +75,7 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
         : p === "win32"
           ? ["AppData/Roaming/Cursor/User/globalStorage"]
           : [".config/cursor/User/globalStorage"],
+    volatile: ["chats", "projects", "ai-tracking", "statsig-cache.json"],
   },
   kimi: {
     bin: "kimi",
@@ -69,6 +84,10 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     envVars: (d) => ({ KIMI_CODE_HOME: d }),
     needsHome: true,
     isolate: () => [],
+    volatile: [
+      "sessions", "logs", "search-index", "user-history",
+      "session_index.jsonl", "telemetry", "device_id",
+    ],
   },
 };
 

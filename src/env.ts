@@ -363,12 +363,13 @@ export function createEnv(name: string): string {
   return dir;
 }
 
+/** Environment names. Dot-prefixed entries are cp's staging dirs, never envs. */
 export function listEnvs(): string[] {
   const base = envsDir();
   if (!fs.existsSync(base)) return [];
   return fs
     .readdirSync(base, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
+    .filter((e) => e.isDirectory() && !e.name.startsWith("."))
     .map((e) => e.name)
     .sort();
 }
