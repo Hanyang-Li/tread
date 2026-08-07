@@ -166,6 +166,46 @@ describe("e2e", () => {
     expect(err).not.toContain("no matches found");
   }, 30000);
 
+  test("激活把 shim 目录放到 PATH 最前，deactivate 精确摘除", async () => {
+    const init = (await tread(["init", "zsh"])).out;
+    const script = path.join(tmp, "shimpath.zsh");
+    fs.writeFileSync(
+      script,
+      `${init}\n` +
+        `tread() { case "$1" in use|deactivate) local __o; __o=$(bun run ${CLI} _export "$@") || return $?; eval "$__o";; *) bun run ${CLI} "$@";; esac }\n` +
+        `before=$PATH\n` +
+        `tread use x\n` +
+        `echo "FIRST=\${PATH%%:*}"\n` +
+        `command -v cursor-agent | sed 's/^/WHICH=/'\n` +
+        `tread deactivate\n` +
+        `[ "$PATH" = "$before" ] && echo "RESTORED=yes" || echo "RESTORED=no"\n`,
+    );
+    const p = Bun.spawn(["zsh", script], {
+      env: { ...process.env, TREAD_STATE_DIR: state, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = await new Response(p.stdout).text();
+    await p.exited;
+    expect(out).toContain(`FIRST=${path.join(state, "shims")}`);
+    // typing the agent's own name must land on the shim while active
+    expect(out).toContain(`WHICH=${path.join(state, "shims", "cursor-agent")}`);
+    expect(out).toContain("RESTORED=yes");
+  }, 30000);
+
+  test("shim 对每个 agent 及别名都存在，且只有需要的才动 HOME", async () => {
+    await tread(["_export", "use", "x"]);
+    const dir = path.join(state, "shims");
+    for (const n of ["claude", "cursor-agent", "agent", "kimi"]) {
+      expect(fs.existsSync(path.join(dir, n))).toBe(true);
+    }
+    const home = (n: string) =>
+      fs.readFileSync(path.join(dir, n), "utf8").includes('HOME="$TREAD_ENV_DIR"');
+    expect(home("cursor-agent")).toBe(true);
+    expect(home("kimi")).toBe(true);
+    expect(home("claude")).toBe(false);
+  }, 20000);
+
   test("use / deactivate 成功时在 stderr 上给出提示", async () => {
     const a = await tread(["_export", "use", "x"]);
     expect(a.err).toContain("tread: x");

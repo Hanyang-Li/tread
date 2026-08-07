@@ -15,16 +15,52 @@ function isLink(p: string): boolean {
   }
 }
 
-/** Create every agent's config dir plus kimi's bridge and credential links. Idempotent. */
+/**
+ * Files that must keep working when an agent runs with HOME pointed at the
+ * env: the agent shells out to git, ssh, gh and npm, and those read the real
+ * home. Linked, not copied, so credentials are never duplicated on disk.
+ */
+const SHARED_FROM_HOME = [
+  ".gitconfig",
+  ".gitignore_global",
+  ".ssh",
+  ".netrc",
+  ".npmrc",
+  ".config/gh",
+];
+
+/**
+ * Seed a usable kimi config from the real one. kimi keeps its provider and
+ * model settings in config.toml, so without this a fresh env cannot start
+ * even though its credentials are shared. Hooks are deliberately dropped —
+ * those are tooling, and tooling is what the env is meant to isolate.
+ */
+function seedKimiConfig(envRoot: string): void {
+  const target = path.join(agentDir(envRoot, "kimi"), "config.toml");
+  if (fs.existsSync(target)) return;
+  let source: string;
+  try {
+    source = fs.readFileSync(path.join(os.homedir(), ".kimi-code", "config.toml"), "utf8");
+  } catch {
+    return;
+  }
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of source.split("\n")) {
+    if (line.trim() === "[[hooks]]") {
+      skipping = true;
+      continue;
+    }
+    if (skipping && line.startsWith("[")) skipping = false;
+    if (!skipping) kept.push(line);
+  }
+  fs.writeFileSync(target, kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n");
+}
+
+/** Create every agent's config dir plus the links a hijacked HOME needs. Idempotent. */
 export function ensureSkeleton(envRoot: string): void {
   for (const a of AGENTS) fs.mkdirSync(agentDir(envRoot, a), { recursive: true });
   fs.mkdirSync(skillsDir(envRoot, "kimi"), { recursive: true });
-
-  // kimi does not follow ~/.agents/skills when KIMI_CODE_HOME is redirected.
-  const toml = path.join(agentDir(envRoot, "kimi"), "config.toml");
-  if (!fs.existsSync(toml)) {
-    fs.writeFileSync(toml, `extra_skill_dirs = ["${skillsDir(envRoot, "kimi")}"]\n`);
-  }
 
   // kimi keeps credentials on disk, so a fresh env would demand a new login.
   // Link them back to the real home. claude and cursor use the keychain.
@@ -32,6 +68,16 @@ export function ensureSkeleton(envRoot: string): void {
     const link = path.join(agentDir(envRoot, "kimi"), n);
     if (fs.existsSync(link) || isLink(link)) continue;
     fs.symlinkSync(path.join(os.homedir(), ".kimi-code", n), link);
+  }
+  seedKimiConfig(envRoot);
+
+  for (const rel of SHARED_FROM_HOME) {
+    const target = path.join(os.homedir(), rel);
+    if (!fs.existsSync(target)) continue;
+    const link = path.join(envRoot, rel);
+    if (fs.existsSync(link) || isLink(link)) continue;
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(target, link);
   }
 }
 

@@ -27,10 +27,30 @@ describe("env lifecycle", () => {
     expect(fs.existsSync(skillsDir(dir, "kimi"))).toBe(true);
   });
 
-  test("kimi 骨架含 extra_skill_dirs 桥接", () => {
+  test("kimi 骨架不写 extra_skill_dirs：shim 移动 HOME 后原生就能发现", () => {
     const dir = envDir("work");
-    const toml = fs.readFileSync(path.join(dir, ".kimi-code/config.toml"), "utf8");
-    expect(toml).toContain(`extra_skill_dirs = ["${skillsDir(dir, "kimi")}"]`);
+    const toml = path.join(dir, ".kimi-code/config.toml");
+    if (fs.existsSync(toml)) {
+      expect(fs.readFileSync(toml, "utf8")).not.toContain("extra_skill_dirs");
+    }
+  });
+
+  test("kimi config 从真 home 播种 provider/model，但剥掉 hooks", () => {
+    const real = path.join(os.homedir(), ".kimi-code/config.toml");
+    if (!fs.existsSync(real)) return;
+    const seeded = fs.readFileSync(path.join(envDir("work"), ".kimi-code/config.toml"), "utf8");
+    expect(seeded).not.toContain("[[hooks]]");
+    if (fs.readFileSync(real, "utf8").includes("default_model")) {
+      expect(seeded).toContain("default_model");
+    }
+  });
+
+  test("HOME 被劫持后 git/ssh 仍可用：共享文件已 symlink", () => {
+    const dir = envDir("work");
+    for (const rel of [".gitconfig", ".ssh"]) {
+      if (!fs.existsSync(path.join(os.homedir(), rel))) continue;
+      expect(fs.lstatSync(path.join(dir, rel)).isSymbolicLink()).toBe(true);
+    }
   });
 
   test("kimi 凭证 symlink 指回真 home", () => {

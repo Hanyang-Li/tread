@@ -34,19 +34,29 @@ kimi            # 同上
 tread deactivate    # 回到你原本的 ~/.claude 等
 ```
 
-新开一个终端就是未激活状态，真实 home 完全不受影响。`which claude` 永远指向真的 claude——tread 不装 shim、不改 PATH、不代理任何命令。
+新开一个终端就是未激活状态，真实 home 完全不受影响。未激活时 shim 不在 `PATH` 上，
+`claude` 就是真的 claude；即使直接调用 shim，它也会原样透传。
 
 ## 工作原理
 
-激活就是在当前 shell 里 export 几个变量，三家 agent 自己读：
+激活做两件事：export 各 agent 的 config dir 变量，并把 `<state>/shims` 放到 `PATH` 最前。
 
-| agent | 变量 | 环境内位置 |
-|---|---|---|
-| claude | `CLAUDE_CONFIG_DIR` | `<env>/.claude/` |
-| cursor | `CURSOR_CONFIG_DIR` + `CURSOR_DATA_DIR` | `<env>/.cursor/` |
-| kimi | `KIMI_CODE_HOME` | `<env>/.kimi-code/` |
+| agent | 变量 | 是否重定向 HOME | 环境内位置 |
+|---|---|---|---|
+| claude | `CLAUDE_CONFIG_DIR` | 否 | `<env>/.claude/` |
+| cursor | `CURSOR_CONFIG_DIR` + `CURSOR_DATA_DIR` | **是** | `<env>/.cursor/` |
+| kimi | `KIMI_CODE_HOME` | **是** | `<env>/.kimi-code/`、`<env>/.agents/skills/` |
 
-环境目录做成了 home 的形状（`.claude/`、`.cursor/`、`.agents/skills/`），所以任何按 `$HOME` 解析路径的安装器都能通过 `tread exec --home` 正确落地。
+**为什么需要 shim 和 HOME 重定向。** cursor 的 `mcp.json` 与 `hooks.json` 是用硬编码的
+`join(homedir(), ".cursor", …)` 解析的，完全无视 `CURSOR_CONFIG_DIR`；kimi 的用户级 skill
+在 `~/.agents/skills`。实测：只设 config dir 变量时，真 home 的 MCP 服务器和 28 个 skill
+会原封不动带进环境；把 `HOME` 指向环境后归零。
+
+HOME 只对需要它的 agent 进程生效——shim 里设置，不会污染你的 shell，所以 `git`、`ssh`、
+`npm` 照常工作。claude 把一切都放在 config dir 内，因此不动它的 HOME。
+
+环境目录做成 home 的形状，并把 `.gitconfig`、`.ssh`、`.netrc`、`.npmrc`、`.config/gh`
+symlink 回真 home，这样 agent 在 HOME 被重定向后 shell 出去跑 git/gh/npm 仍然正常。
 
 ## 装东西：用各 agent 原生的工具
 
@@ -106,6 +116,7 @@ MCP 的 header 与 env **只显示 key，值一律打码**。
 
 - **claude 每个环境要单独 `/login` 一次。** 它的凭证在 keychain 里且与 config dir 绑定，磁盘上没有可复制的东西（实测：全量复制 config dir 也无效）。cursor 的凭证在 keychain 且不受 config dir 影响，自动共享；kimi 的凭证在磁盘上，tread 建环境时 symlink 回真 home，也不用重登。
 - **只管理环境级（全局）内容。** project scope 的 skill / plugin / MCP / hook 不读也不显示——那是各 agent 自己的事。
+- **新建 kimi 环境会从真 home 播种 provider / model 配置**（剥掉 hooks）。kimi 把模型设置和凭证分开存，不播种的话环境根本起不来。
 - `tread use` 需要 shell 集成。脚本里用 `tread exec` 代替。
 
 ## starship
@@ -120,7 +131,7 @@ tread init starship
 
 ```bash
 bun install
-bun test              # 105 个测试，含 e2e
+bun test              # 121 个测试，含 e2e
 bun run typecheck
 bun run src/index.ts  # 直接从源码跑
 ```
@@ -129,6 +140,7 @@ bun run src/index.ts  # 直接从源码跑
 
 - `~/.local/state/tread/envs/<name>/` — 环境（`TREAD_STATE_DIR` 可覆盖）
 - `~/.local/state/tread/state.json` — 上次使用时间
+- `~/.local/state/tread/shims/` — agent 启动垫片（`tread doctor --fix` 可重建）
 - `~/.local/bin/tread` — 二进制
 
 设计文档在 `docs/superpowers/specs/`，实施计划在 `docs/superpowers/plans/`。

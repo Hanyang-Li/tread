@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { activationEnv } from "./paths.ts";
+import { activationEnv, shimsDir } from "./paths.ts";
 import { requireEnv, touchLastUsed } from "./env.ts";
+import { writeShims } from "./shims.ts";
 
 /**
  * `use` and `deactivate` must mutate the caller's shell, so their output is
@@ -132,18 +133,31 @@ function isFish(): boolean {
 export function exportLines(name: string): string {
   const dir = requireEnv(name);
   touchLastUsed(name);
+  writeShims();
   const vars: Record<string, string> = { TREAD_ENV: name, ...activationEnv(dir) };
-  return (
-    Object.entries(vars)
-      .map(([k, v]) => (isFish() ? `set -gx ${k} ${q(v)}` : `export ${k}=${q(v)}`))
-      .join("\n") + "\n"
+  const lines = Object.entries(vars).map(([k, v]) =>
+    isFish() ? `set -gx ${k} ${q(v)}` : `export ${k}=${q(v)}`,
   );
+  // shims give the agents their HOME; putting them first is what makes
+  // typing `claude` land in the environment
+  const shims = shimsDir();
+  lines.push(
+    isFish()
+      ? `set -gx TREAD_PATH_ENTRY ${q(shims)}\nfish_add_path -gm ${q(shims)}`
+      : `export TREAD_PATH_ENTRY=${q(shims)}\ncase ":$PATH:" in *:${shims}:*) ;; *) export PATH=${q(shims)}:"$PATH" ;; esac`,
+  );
+  return lines.join("\n") + "\n";
 }
 
 export function deactivateLines(): string {
-  const keys = ["TREAD_ENV", ...Object.keys(activationEnv("/"))];
+  const keys = ["TREAD_ENV", ...Object.keys(activationEnv("/")), "TREAD_PATH_ENTRY"];
+  const shims = shimsDir();
+  const dropPath = isFish()
+    ? `set -gx PATH (string match -v ${q(shims)} $PATH)`
+    : `export PATH=$(printf '%s' "$PATH" | tr ':' '\\n' | grep -vxF ${q(shims)} | paste -sd: -)`;
   return (
-    keys.map((k) => (isFish() ? `set -e ${k}` : `unset ${k}`)).join("\n") + "\n"
+    [dropPath, ...keys.map((k) => (isFish() ? `set -e ${k}` : `unset ${k}`))].join("\n") +
+    "\n"
   );
 }
 

@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AGENTS, AGENT_SPECS, isAgent, type Agent } from "./agents.ts";
+import { AGENTS, AGENT_SPECS, isAgent, shimNames, type Agent } from "./agents.ts";
 import {
   createEnv, ensureSkeleton, lastUsed, listEnvs, removeEnv, requireEnv, resolveEnv,
 } from "./env.ts";
-import { activationEnv, agentDir, envDir, skillsDir, stateDir } from "./paths.ts";
+import { activationEnv, agentDir, envDir, shimsDir, skillsDir, stateDir } from "./paths.ts";
+import { realBinary, shimsHealthy, writeShims } from "./shims.ts";
 import { deactivateLines, exportLines, initSnippet, shellLoaded, writeInit } from "./shell.ts";
 import { colorsEnabled, color, formatError, table, tildify } from "./render.ts";
 import {
@@ -209,9 +210,17 @@ function doctorCommand(args: string[], out: Out): number {
     fs.existsSync(stateDir()) ? ok : c.dim("empty"),
     `${tildify(stateDir())} · ${listEnvs().length} envs`,
   ]);
-  for (const a of AGENTS) {
-    const bin = which(AGENT_SPECS[a].bin);
-    rows.push([`  ${AGENT_SPECS[a].bin}`, bin ? ok : c.red("missing"), bin ? tildify(bin) : ""]);
+  const healthy = shimsHealthy();
+  if (!healthy && fix) writeShims();
+  rows.push([
+    "shims",
+    healthy ? ok : fix ? c.green("regenerated") : c.yellow("stale"),
+    tildify(shimsDir()),
+  ]);
+  for (const { name, agent } of shimNames()) {
+    const bin = realBinary(name);
+    const note = AGENT_SPECS[agent].needsHome ? c.dim("HOME redirected") : "";
+    rows.push([`  ${name}`, bin ? ok : c.red("missing"), bin ? `${tildify(bin)}  ${note}` : ""]);
   }
   out(table(rows).join("\n") + "\n\n");
 
@@ -262,18 +271,6 @@ function isBrokenLink(p: string): boolean {
     return false;
   }
   return !fs.existsSync(p);
-}
-
-function which(bin: string): string | null {
-  for (const dir of (process.env.PATH ?? "").split(":")) {
-    if (!dir) continue;
-    const p = path.join(dir, bin);
-    try {
-      fs.accessSync(p, fs.constants.X_OK);
-      return p;
-    } catch {}
-  }
-  return null;
 }
 
 const SHELL_NOT_LOADED =

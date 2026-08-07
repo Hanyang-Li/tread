@@ -16,6 +16,11 @@ export function stateFile(): string {
   return path.join(stateDir(), "state.json");
 }
 
+/** Shim directory, prepended to PATH while an environment is active. */
+export function shimsDir(): string {
+  return path.join(stateDir(), "shims");
+}
+
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function validateEnvName(name: string): void {
@@ -36,9 +41,9 @@ export function agentDir(envRoot: string, a: Agent): string {
 }
 
 /**
- * Where a global skill install lands when HOME=<envRoot>.
- * claude and cursor resolve under their own config dir; kimi resolves to
- * ~/.agents/skills, which we bridge via config.toml's extra_skill_dirs.
+ * Where global skills live for an agent inside an environment.
+ * claude and cursor look under their own config dir; kimi discovers
+ * `~/.agents/skills`, which resolves into the env because its shim moves HOME.
  */
 export function skillsDir(envRoot: string, a: Agent): string {
   return a === "kimi"
@@ -46,7 +51,13 @@ export function skillsDir(envRoot: string, a: Agent): string {
     : path.join(agentDir(envRoot, a), "skills");
 }
 
-/** The variables `tread use` exports into the caller's shell. */
+/**
+ * The variables `tread use` exports into the caller's shell.
+ *
+ * HOME is deliberately absent: cursor and kimi need it moved, but rewriting
+ * HOME for the whole shell would break git, ssh and npm. Their shims set it
+ * for the agent process alone.
+ */
 export function activationEnv(envRoot: string): Record<string, string> {
   const out: Record<string, string> = { TREAD_ENV_DIR: envRoot };
   for (const a of AGENTS) {
