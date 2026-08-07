@@ -51,8 +51,18 @@ export function defaultAllow(platform: NodeJS.Platform = process.platform): stri
     // editors an agent may shell into
     ".vim", ".vimrc",
   ];
-  // quiets the macOS login banner and locale warning in spawned shells
-  if (platform === "darwin") paths.push(".hushlogin", ".CFUserTextEncoding");
+  if (platform === "darwin") {
+    // quiets the login banner and locale warning in spawned shells
+    paths.push(".hushlogin", ".CFUserTextEncoding");
+    // macOS resolves the login keychain through $HOME, so moving HOME takes
+    // it out of the search list entirely and Security reports "a default
+    // keychain could not be found" — which is every agent's stored login.
+    // Measured: with HOME on the env, `security find-generic-password -s
+    // "Claude Code-credentials"` finds nothing; with this one path shared it
+    // finds it again. Keychains only, never Library: the rest is app state,
+    // which is exactly what an environment exists to keep apart.
+    paths.push("Library/Keychains");
+  }
   return paths;
 }
 

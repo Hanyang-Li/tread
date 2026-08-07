@@ -98,12 +98,29 @@ describe("env lifecycle", () => {
     expect(hardDeny("linux")).toContain(".config/cursor/User/globalStorage");
   });
 
+  test("macOS 的 login keychain 必须共享，否则每个 agent 都登不上", () => {
+    expect(defaultAllow("darwin")).toContain("Library/Keychains");
+    expect(defaultAllow("linux")).not.toContain("Library/Keychains");
+    if (process.platform !== "darwin") return;
+    const dir = envDir("work");
+    if (!fs.existsSync(path.join(os.homedir(), "Library/Keychains"))) return;
+    // Library itself is mirrored so only Keychains crosses over — the rest is
+    // app state, which is what the environment exists to keep apart
+    expect(fs.lstatSync(path.join(dir, "Library")).isSymbolicLink()).toBe(false);
+    expect(fs.readlinkSync(path.join(dir, "Library/Keychains")))
+      .toBe(path.join(os.homedir(), "Library/Keychains"));
+    expect(fs.existsSync(path.join(dir, "Library/Application Support"))).toBe(false);
+  });
+
   test("只通往 deny 目标的路径整条跳过，不留空镜像目录", () => {
     const dir = envDir("work");
-    // ~/Library is not allowed; it is only in the policy tree because cursor's
-    // globalStorage hangs off it. Nothing below is shared, so nothing is made.
-    expect(hardDeny("darwin")[0] !== undefined).toBe(true);
-    expect(fs.existsSync(path.join(dir, "Library"))).toBe(false);
+    // Library/Application Support is in the policy tree only because cursor's
+    // globalStorage hangs off it. Nothing under it is allowed, so descending
+    // would leave a chain of empty mirror directories and nothing else.
+    expect(hardDeny("darwin")).toContain(
+      "Library/Application Support/Cursor/User/globalStorage",
+    );
+    expect(fs.existsSync(path.join(dir, "Library/Application Support"))).toBe(false);
   });
 
   test("白名单：home 里没被允许的东西不进环境", () => {

@@ -163,7 +163,12 @@ MCP 的 header 与 env **只显示 key，值一律打码**。
 
 ## 已知限制
 
-- **claude 每个环境要单独 `/login` 一次。** 它的凭证在 keychain 里且与 config dir 绑定，磁盘上没有可复制的东西（实测：全量复制 config dir 也无效）。cursor 的凭证在 keychain 且不受 config dir 影响，自动共享；kimi 的凭证在磁盘上，tread 建环境时 symlink 回真 home，也不用重登。
+- **claude 每个环境要单独 `/login` 一次。** 它的凭证在 keychain 里且与 config dir 绑定，磁盘上没有可复制的东西（实测：全量复制 config dir 也无效）。kimi 的凭证在磁盘上，tread 建环境时 symlink 回真 home，不用重登。
+
+- **macOS 的 login keychain 必须共享（`Library/Keychains`）。** keychain 是按 `$HOME` 找的，
+  HOME 一移动，`security default-keychain` 直接报 *a default keychain could not be found* ——
+  claude 和 cursor 的登录态全在里面，表现就是死活登不上、弹窗说找不到钥匙串。只共享
+  `Library/Keychains` 这一条，`Library` 本身改用镜像目录，其余 app 状态照旧隔离。
 - **cursor 会往新环境里自动下载你账号的默认插件。** 实测新建环境 32 秒后它自己拉了一份
   `dbt / github / redis-development / superpowers`——是独立副本不是泄漏，但新环境对 cursor
   而言不是全空的。要清掉用 `cursor-agent plugin` 自己处理。
