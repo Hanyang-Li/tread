@@ -146,10 +146,14 @@ MCP 的 header 与 env **只显示 key，值一律打码**。
 ## starship
 
 ```bash
-tread init starship
+tread init starship --write     # 两步都替你做了
+tread init starship             # 或者打印出来自己贴
 ```
 
-把打印出来的片段放进 `~/.config/starship.toml`，再把 `${env_var.tread}` 放进顶层 `format`。未激活时胶囊自动消失。
+starship 只渲染顶层 `format` 点到名的模块，所以光加 `[env_var.tread]` 表是不够的：写了显式
+`format` 的配置还得把 `${env_var.tread}` 放进去，否则胶囊永远不出现。`--write` 两件事一起做——
+追加模块，并把 `${env_var.tread}` 插到顶层 `format` 最前面（没有顶层 `format` 时不动，默认的
+`$all` 已经覆盖 `env_var.*`）。想换位置就自己挪那一处引用。未激活时胶囊自动消失。
 
 ## 开发
 

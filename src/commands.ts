@@ -292,12 +292,27 @@ export async function runCommand(argv: string[], out: Out, err: Out = out): Prom
         const target = args[0];
         if (!target) throw new Error("init needs a shell\n\n  tread init zsh");
         if (write) {
-          const { file, changed } = writeInit(target);
-          err(
-            changed
-              ? `tread: added to ${tildify(file)}\n  restart your shell, or: source ${tildify(file)}\n`
-              : `tread: already present in ${tildify(file)}\n`,
-          );
+          const { file, changed, format } = writeInit(target);
+          const where = tildify(file);
+          if (format) {
+            // starship re-reads its config on every prompt — nothing to restart.
+            // What it does need is the module named in the top-level format.
+            const note =
+              format === "spliced" ? `  \${env_var.tread} added to your top-level format\n`
+              : format === "manual" ? `  add \${env_var.tread} to your top-level format to see it\n`
+              : "";
+            err(
+              changed || format === "spliced"
+                ? `tread: ${changed ? "added to" : "updated"} ${where}\n${note}`
+                : `tread: already present in ${where}\n`,
+            );
+          } else {
+            err(
+              changed
+                ? `tread: added to ${where}\n  restart your shell, or: source ${where}\n`
+                : `tread: already present in ${where}\n`,
+            );
+          }
           return 0;
         }
         out(initSnippet(target));

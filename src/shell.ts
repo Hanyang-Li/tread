@@ -60,13 +60,17 @@ end
 set -gx TREAD_SHELL fish
 `;
 
-const STARSHIP = `# add to ~/.config/starship.toml
-[env_var.tread]
+const MODULE_REF = "${env_var.tread}";
+
+const STARSHIP_MODULE = `[env_var.tread]
 variable = 'TREAD_ENV'
-format   = '[  $env_value ]($style)'
+format   = '[ 󰚩 $env_value ]($style)'
 style    = 'bold fg:255 bg:99'
 disabled = false
+`;
 
+const STARSHIP = `# add to ~/.config/starship.toml
+${STARSHIP_MODULE}
 # then place \${env_var.tread} in your top-level format, e.g.
 # format = '\${env_var.tread}$directory$git_branch$character'
 `;
@@ -102,18 +106,92 @@ export function rcFile(target: string): string {
 const MARK = "# >>> tread >>>";
 const MARK_END = "# <<< tread <<<";
 
+export type StarshipEdit =
+  | { kind: "spliced"; text: string }
+  | { kind: "present" }
+  | { kind: "default" }
+  | { kind: "manual" };
+
+const OPEN_FORMAT = /^[ \t]*format[ \t]*=[ \t]*("""|'''|"|')/;
+const OPEN_MULTILINE = /=[ \t]*("""|''')/;
+
+/** Offset just past the opening quote of the top-level `format`, if it has one. */
+function topLevelFormat(toml: string): { delim: string; at: number } | null {
+  let at = 0;
+  let inside: string | null = null;
+  for (const line of toml.split("\n")) {
+    if (inside) {
+      if (line.includes(inside)) inside = null;
+    } else {
+      const t = line.trimStart();
+      // the first table header ends the top level; a module's own `format` is
+      // not the one starship renders the prompt from
+      if (t.startsWith("[")) return null;
+      if (!t.startsWith("#")) {
+        const f = OPEN_FORMAT.exec(line);
+        if (f) return { delim: f[1]!, at: at + f[0].length };
+        // some other key opening a multi-line string: its body may contain
+        // lines that look like table headers
+        const m = OPEN_MULTILINE.exec(line);
+        if (m && !line.slice(m.index + m[0].length).includes(m[1]!)) inside = m[1]!;
+      }
+    }
+    at += line.length + 1;
+  }
+  return null;
+}
+
+/**
+ * starship renders only the modules its top-level `format` names, so appending
+ * `[env_var.tread]` is not enough: with an explicit format the pill never
+ * shows. Configs without one fall back to `$all`, which does cover `env_var.*`.
+ */
+export function spliceStarshipFormat(toml: string): StarshipEdit {
+  const f = topLevelFormat(toml);
+  if (!f) return { kind: "default" };
+
+  const rest = toml.slice(f.at);
+  const close = rest.indexOf(f.delim);
+  if ((close === -1 ? rest : rest.slice(0, close)).includes(MODULE_REF)) {
+    return { kind: "present" };
+  }
+
+  // a newline right after the opening delimiter is eaten by TOML; keeping that
+  // shape means ending our own line with a continuation, which only basic
+  // strings have — in a literal string the backslash would reach the prompt
+  const wrapped = rest.startsWith("\n");
+  if (wrapped && f.delim === "'''") return { kind: "manual" };
+  const insert = wrapped ? `\n${MODULE_REF}\\` : MODULE_REF;
+  return { kind: "spliced", text: toml.slice(0, f.at) + insert + rest };
+}
+
 /** Append the integration to the shell rc, or report it is already there. */
-export function writeInit(target: string): { file: string; changed: boolean } {
+export function writeInit(
+  target: string,
+): { file: string; changed: boolean; format?: StarshipEdit["kind"] } {
   const file = rcFile(target);
   const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-  if (existing.includes(MARK)) return { file, changed: false };
 
+  if (target === "starship") {
+    const edit = spliceStarshipFormat(existing);
+    const changed = !existing.includes(MARK);
+    let text = edit.kind === "spliced" ? edit.text : existing;
+    if (changed) {
+      const sep = text && !text.endsWith("\n") ? "\n" : "";
+      text += `${sep}\n${MARK}\n${STARSHIP_MODULE}${MARK_END}\n`;
+    }
+    if (changed || edit.kind === "spliced") {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, text);
+    }
+    return { file, changed, format: edit.kind };
+  }
+
+  if (existing.includes(MARK)) return { file, changed: false };
   const line =
-    target === "starship"
-      ? initSnippet("starship")
-      : target === "fish"
-        ? "tread init fish | source\n"
-        : `eval "$(tread init ${target})"\n`;
+    target === "fish"
+      ? "tread init fish | source\n"
+      : `eval "$(tread init ${target})"\n`;
 
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const sep = existing && !existing.endsWith("\n") ? "\n" : "";

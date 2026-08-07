@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -213,4 +213,61 @@ describe("e2e", () => {
     const b = await tread(["_export", "deactivate"]);
     expect(b.err).toContain("tread: deactivated");
   }, 20000);
+
+  // 光追加 [env_var.tread] 表，对写了显式 format 的配置等于什么都没做：
+  // starship 只渲染顶层 format 点名的模块
+  describe("init starship --write", () => {
+    const CONFIG = 'format = """\n[](red)\\\n$directory\\\n$character"""\n';
+    let home: string;
+    let cfg: string;
+
+    const write = () => tread(["init", "starship", "--write"], { HOME: home });
+    const read = () => fs.readFileSync(cfg, "utf8");
+
+    beforeEach(() => {
+      home = fs.mkdtempSync(path.join(tmp, "home-"));
+      cfg = path.join(home, ".config/starship.toml");
+      fs.mkdirSync(path.dirname(cfg), { recursive: true });
+      fs.writeFileSync(cfg, CONFIG);
+    });
+
+    test("既追加模块，也把它接进 format", async () => {
+      expect((await write()).code).toBe(0);
+      expect(read()).toContain("[env_var.tread]");
+      expect(read()).toContain('format = """\n${env_var.tread}\\\n[](red)\\\n');
+    });
+
+    test("写进文件的块不带复制粘贴用的说明文字", async () => {
+      await write();
+      expect(read()).not.toContain("add to ~/.config/starship.toml");
+      expect(read()).not.toContain("then place");
+    });
+
+    test("重复执行不叠加", async () => {
+      await write();
+      const first = read();
+      await write();
+      expect(read()).toBe(first);
+    });
+
+    test("块已存在但 format 漏了时仍然补上", async () => {
+      // 老版本 --write 留下的状态：模块在，prompt 却一直不显示
+      fs.writeFileSync(cfg, CONFIG + "\n# >>> tread >>>\n[env_var.tread]\n# <<< tread <<<\n");
+      await write();
+      expect(read()).toContain("${env_var.tread}\\\n[](red)");
+    });
+
+    test("不建议 source 一个 TOML 文件", async () => {
+      const r = await write();
+      expect(r.err).not.toContain("source ");
+      expect(r.err).toContain("starship.toml");
+    });
+
+    test("没有顶层 format 时只追加模块", async () => {
+      fs.writeFileSync(cfg, '[directory]\nformat = "[ $path ]($style)"\n');
+      await write();
+      expect(read()).toContain("[env_var.tread]");
+      expect(read()).toContain('[directory]\nformat = "[ $path ]($style)"');
+    });
+  });
 });

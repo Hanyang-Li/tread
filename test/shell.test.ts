@@ -12,9 +12,8 @@ beforeAll(() => {
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 const { createEnv } = await import("../src/env.ts");
-const { initSnippet, exportLines, deactivateLines, shellLoaded } = await import(
-  "../src/shell.ts"
-);
+const { initSnippet, exportLines, deactivateLines, shellLoaded, spliceStarshipFormat } =
+  await import("../src/shell.ts");
 
 describe("shell integration", () => {
   test("zsh 片段定义 tread() 且只让 ls 走 --emit", () => {
@@ -73,5 +72,57 @@ describe("shell integration", () => {
     process.env.TREAD_SHELL = "zsh";
     expect(shellLoaded()).toBe(true);
     delete process.env.TREAD_SHELL;
+  });
+});
+
+// starship 只渲染顶层 format 点名的模块：光追加 [env_var.tread] 表，
+// 对写了显式 format 的配置来说等于什么都没发生
+describe("starship format", () => {
+  const CONFIG =
+    'format = """\n' +
+    "[](red)\\\n" +
+    "$directory\\\n" +
+    '$character"""\n' +
+    "\n" +
+    "[directory]\n" +
+    'format = "[ $path ]($style)"\n';
+
+  const spliced = (toml: string): string => {
+    const r = spliceStarshipFormat(toml);
+    if (r.kind !== "spliced") throw new Error(`expected spliced, got ${r.kind}`);
+    return r.text;
+  };
+
+  test("插入到顶层 format 最前，且不破坏 \"\"\" 的续行", () => {
+    // 换行仍紧跟 """（TOML 会吃掉它），自己这行以 \ 结尾，不给 prompt 加空行
+    expect(spliced(CONFIG)).toContain('format = """\n${env_var.tread}\\\n[](red)\\\n');
+  });
+
+  test("只动顶层 format，不碰模块自己的 format", () => {
+    expect(spliced(CONFIG)).toContain('[directory]\nformat = "[ $path ]($style)"');
+  });
+
+  test("已经引用过就不再插入", () => {
+    expect(spliceStarshipFormat(spliced(CONFIG)).kind).toBe("present");
+  });
+
+  test("没有顶层 format：$all 已经覆盖 env_var.*，无需改动", () => {
+    expect(spliceStarshipFormat('[directory]\nformat = "x"\n').kind).toBe("default");
+    expect(spliceStarshipFormat('# format = "$all"\n').kind).toBe("default");
+  });
+
+  test("单行 format 直接插在引号后", () => {
+    expect(spliced("format = '$directory$character'\n")).toContain(
+      "format = '${env_var.tread}$directory$character'",
+    );
+  });
+
+  test("顶层多行字符串里的 [ 不算表头", () => {
+    const cfg = 'right_format = """\n[](red)\\\n"""\nformat = "$directory"\n';
+    expect(spliced(cfg)).toContain('format = "${env_var.tread}$directory"');
+  });
+
+  test("''' 里没有续行语法，宁可让人自己动手", () => {
+    expect(spliceStarshipFormat("format = '''\n$directory\n'''\n").kind).toBe("manual");
   });
 });
