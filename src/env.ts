@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AGENTS } from "./agents.ts";
+import { AGENTS, AGENT_SPECS } from "./agents.ts";
 import { agentDir, envDir, envsDir, skillsDir, stateFile } from "./paths.ts";
 
 /** Entries tread itself writes into an agent dir when creating the skeleton. */
@@ -16,18 +16,108 @@ function isLink(p: string): boolean {
 }
 
 /**
- * Files that must keep working when an agent runs with HOME pointed at the
- * env: the agent shells out to git, ssh, gh and npm, and those read the real
- * home. Linked, not copied, so credentials are never duplicated on disk.
+ * What an environment does NOT inherit from the real home.
+ *
+ * An env exists to isolate agent tooling, not to be a fresh user account: an
+ * agent running with HOME moved still shells out to git, gh, npm, ssh, rustup
+ * and whatever else you have. So the rule is inverted — share everything by
+ * default, deny only what must stay separate. A whitelist would silently miss
+ * every tool added later.
+ *
+ * Derived from the agent table, so registering an agent isolates it too.
  */
-const SHARED_FROM_HOME = [
-  ".gitconfig",
-  ".gitignore_global",
-  ".ssh",
-  ".netrc",
-  ".npmrc",
-  ".config/gh",
-];
+function isolatedNames(): Set<string> {
+  const names = new Set<string>([
+    ".agents", // shared skill root; kimi discovers user skills here
+    ".local", // holds tread's own state — linking it would loop
+  ]);
+  for (const a of AGENTS) names.add(AGENT_SPECS[a].dir);
+  return names;
+}
+
+/** True when `link` is a symlink tread created into the real home. */
+function pointsIntoHome(link: string): boolean {
+  try {
+    if (!fs.lstatSync(link).isSymbolicLink()) return false;
+    return fs.readlinkSync(link).startsWith(os.homedir() + path.sep);
+  } catch {
+    return false;
+  }
+}
+
+function linkInto(target: string, link: string): boolean {
+  // a real file or directory in the env always wins
+  if (fs.existsSync(link) && !isLink(link)) return false;
+  if (isLink(link)) {
+    if (fs.readlinkSync(link) === target) return false;
+    fs.rmSync(link, { force: true });
+  }
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(target, link);
+  return true;
+}
+
+/**
+ * Mirror the real home into the env as symlinks, minus the isolated names.
+ * Re-run on every activation so anything added to the home later shows up.
+ * Returns the entries added and the dead links pruned.
+ */
+export function syncHomeLinks(envRoot: string): { added: string[]; pruned: string[] } {
+  const home = os.homedir();
+  const skip = isolatedNames();
+  const added: string[] = [];
+  const pruned: string[] = [];
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(home);
+  } catch {
+    return { added, pruned };
+  }
+
+  for (const name of entries) {
+    if (skip.has(name)) continue;
+    if (linkInto(path.join(home, name), path.join(envRoot, name))) added.push(name);
+  }
+
+  // ~/.local is denied wholesale because tread's state lives under it and a
+  // link would nest the env inside itself. Its siblings are still useful, so
+  // mirror one level down and skip only `state`.
+  const localSrc = path.join(home, ".local");
+  if (fs.existsSync(localSrc)) {
+    const localDst = path.join(envRoot, ".local");
+    if (!isLink(localDst)) {
+      fs.mkdirSync(localDst, { recursive: true });
+      for (const name of safeReaddir(localSrc)) {
+        if (name === "state") continue;
+        if (linkInto(path.join(localSrc, name), path.join(localDst, name))) {
+          added.push(`.local/${name}`);
+        }
+      }
+    }
+  }
+
+  // drop links whose target disappeared from the real home
+  for (const dir of [envRoot, path.join(envRoot, ".local")]) {
+    for (const name of safeReaddir(dir)) {
+      const link = path.join(dir, name);
+      if (!pointsIntoHome(link)) continue;
+      if (fs.existsSync(link)) continue;
+      fs.rmSync(link, { force: true });
+      pruned.push(path.relative(envRoot, link));
+    }
+  }
+
+  return { added, pruned };
+}
+
+function safeReaddir(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Seed a usable kimi config from the real one. kimi keeps its provider and
@@ -70,15 +160,7 @@ export function ensureSkeleton(envRoot: string): void {
     fs.symlinkSync(path.join(os.homedir(), ".kimi-code", n), link);
   }
   seedKimiConfig(envRoot);
-
-  for (const rel of SHARED_FROM_HOME) {
-    const target = path.join(os.homedir(), rel);
-    if (!fs.existsSync(target)) continue;
-    const link = path.join(envRoot, rel);
-    if (fs.existsSync(link) || isLink(link)) continue;
-    fs.mkdirSync(path.dirname(link), { recursive: true });
-    fs.symlinkSync(target, link);
-  }
+  syncHomeLinks(envRoot);
 }
 
 export function createEnv(name: string): string {

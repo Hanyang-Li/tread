@@ -55,8 +55,18 @@ tread deactivate    # 回到你原本的 ~/.claude 等
 HOME 只对需要它的 agent 进程生效——shim 里设置，不会污染你的 shell，所以 `git`、`ssh`、
 `npm` 照常工作。claude 把一切都放在 config dir 内，因此不动它的 HOME。
 
-环境目录做成 home 的形状，并把 `.gitconfig`、`.ssh`、`.netrc`、`.npmrc`、`.config/gh`
-symlink 回真 home，这样 agent 在 HOME 被重定向后 shell 出去跑 git/gh/npm 仍然正常。
+环境目录做成 home 的形状，并把真 home 的内容 symlink 进来——**默认全部共享，只拒绝该隔离的**：
+
+```
+拒绝：.claude  .cursor  .kimi-code  .agents  .local/state
+共享：其余一切（.ssh  .config  .zshrc  .npmrc  .cargo  …）
+```
+
+用拒绝表而不是允许表，是因为允许表会漏掉你以后才装的工具。链接在**每次激活时重新同步**，
+新增的配置自动接上，真 home 里删掉的会被摘除。环境里自己建的真实文件永远优先，不会被链接覆盖。
+
+`.local` 不整体链接（tread 自己的状态在里面，链了会把环境套进自己），改为往下一层
+链 `bin`、`share` 等，只跳过 `state`。
 
 ## 装东西：用各 agent 原生的工具
 

@@ -13,7 +13,7 @@ afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 const {
   createEnv, ensureSkeleton, listEnvs, removeEnv, requireEnv, resolveEnv,
-  touchLastUsed, lastUsed,
+  touchLastUsed, lastUsed, syncHomeLinks,
 } = await import("../src/env.ts");
 const { envDir, skillsDir, agentDir } = await import("../src/paths.ts");
 
@@ -45,11 +45,63 @@ describe("env lifecycle", () => {
     }
   });
 
-  test("HOME 被劫持后 git/ssh 仍可用：共享文件已 symlink", () => {
+  test("默认共享真 home：常见配置都在，且是 symlink 不是拷贝", () => {
     const dir = envDir("work");
-    for (const rel of [".gitconfig", ".ssh"]) {
+    for (const rel of [".gitconfig", ".ssh", ".npmrc", ".zshrc"]) {
       if (!fs.existsSync(path.join(os.homedir(), rel))) continue;
-      expect(fs.lstatSync(path.join(dir, rel)).isSymbolicLink()).toBe(true);
+      const link = path.join(dir, rel);
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(fs.readlinkSync(link)).toBe(path.join(os.homedir(), rel));
+    }
+  });
+
+  test("被隔离的目录绝不能链过来——链了就等于没隔离", () => {
+    const dir = envDir("work");
+    for (const rel of [".claude", ".cursor", ".kimi-code", ".agents"]) {
+      const p = path.join(dir, rel);
+      if (!fs.existsSync(p)) continue;
+      expect(fs.lstatSync(p).isSymbolicLink()).toBe(false);
+    }
+  });
+
+  test(".local 不整体链接，避免把环境套进自己里；但 bin/share 仍可达", () => {
+    const dir = envDir("work");
+    expect(fs.lstatSync(path.join(dir, ".local")).isSymbolicLink()).toBe(false);
+    expect(fs.existsSync(path.join(dir, ".local/state/tread"))).toBe(false);
+    if (fs.existsSync(path.join(os.homedir(), ".local/bin"))) {
+      expect(fs.lstatSync(path.join(dir, ".local/bin")).isSymbolicLink()).toBe(true);
+    }
+  });
+
+  test("重新同步能接上后来才出现的配置", () => {
+    const dir = envDir("work");
+    const probe = `.tread-probe-${process.pid}`;
+    const real = path.join(os.homedir(), probe);
+    fs.writeFileSync(real, "x");
+    try {
+      expect(fs.existsSync(path.join(dir, probe))).toBe(false);
+      syncHomeLinks(dir);
+      expect(fs.readlinkSync(path.join(dir, probe))).toBe(real);
+      // and prunes it again once it disappears from the real home
+      fs.rmSync(real);
+      syncHomeLinks(dir);
+      expect(fs.existsSync(path.join(dir, probe))).toBe(false);
+    } finally {
+      fs.rmSync(real, { force: true });
+    }
+  });
+
+  test("环境里的真实文件不会被链接覆盖", () => {
+    const dir = envDir("work");
+    const probe = `.tread-own-${process.pid}`;
+    fs.writeFileSync(path.join(os.homedir(), probe), "home");
+    fs.writeFileSync(path.join(dir, probe), "mine");
+    try {
+      syncHomeLinks(dir);
+      expect(fs.lstatSync(path.join(dir, probe)).isSymbolicLink()).toBe(false);
+      expect(fs.readFileSync(path.join(dir, probe), "utf8")).toBe("mine");
+    } finally {
+      fs.rmSync(path.join(os.homedir(), probe), { force: true });
     }
   });
 

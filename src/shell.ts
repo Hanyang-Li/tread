@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { activationEnv, shimsDir } from "./paths.ts";
-import { requireEnv, touchLastUsed } from "./env.ts";
+import { ensureSkeleton, requireEnv, touchLastUsed } from "./env.ts";
 import { writeShims } from "./shims.ts";
 
 /**
@@ -132,6 +132,9 @@ function isFish(): boolean {
 
 export function exportLines(name: string): string {
   const dir = requireEnv(name);
+  // re-sync on every activation: shims can go stale after an agent updates,
+  // and anything added to the real home since last time should show up
+  ensureSkeleton(dir);
   touchLastUsed(name);
   writeShims();
   const vars: Record<string, string> = { TREAD_ENV: name, ...activationEnv(dir) };
