@@ -7,6 +7,9 @@ import { envDir, envsDir, realHome } from "./paths.ts";
 /** How far a chain of dereferenced symlinks may go before we give up. */
 const MAX_DEPTH = 8;
 
+/** Past this size a file is not worth scanning for a path to rewrite. */
+const MAX_REWRITE_BYTES = 8 * 1024 * 1024;
+
 /**
  * Env-relative paths a copy leaves behind, beyond the per-agent lists.
  *
@@ -135,6 +138,69 @@ function copyTree(src: string, dst: string, result: CopyResult): void {
 }
 
 /**
+ * Replace every mention of `from` with `to` in the files under `root`.
+ *
+ * A byte-identical copy is not an independent environment. Agents bake their
+ * absolute config path into what they write: claude's hook commands and
+ * installed_plugins.json, cursor's hooks.json, kimi's extra_skill_dirs, and
+ * whatever path a skill's own installer computed. Left alone, the copy reads
+ * the source's directories and says nothing about it — you edit a hook here
+ * and watch the old one keep running.
+ *
+ * Literal, whole-path substitution only. The environment *name* is never
+ * substituted: a name like "test" would hit prose everywhere.
+ */
+export function rewritePaths(
+  root: string,
+  from: string,
+  to: string,
+): { rewritten: number; skipped: string[] } {
+  let rewritten = 0;
+  const skipped: string[] = [];
+
+  const walk = (rel: string): void => {
+    const dir = rel ? path.join(root, rel) : root;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      const p = path.join(root, childRel);
+      // never follow a link: those point into the real home, which is not ours
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        walk(childRel);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      let st: fs.Stats;
+      try {
+        st = fs.statSync(p);
+      } catch {
+        continue;
+      }
+      if (st.size > MAX_REWRITE_BYTES) {
+        skipped.push(childRel);
+        continue;
+      }
+      const buf = fs.readFileSync(p);
+      // a NUL early on means binary: substituting into it would corrupt the
+      // file, and no agent writes its configuration that way
+      if (buf.subarray(0, 8192).includes(0)) continue;
+      const text = buf.toString("utf8");
+      if (!text.includes(from)) continue;
+      try {
+        fs.writeFileSync(p, text.split(from).join(to));
+        rewritten++;
+      } catch {
+        // an unwritable file is worth reporting, not worth failing the copy
+        skipped.push(childRel);
+      }
+    }
+  };
+
+  walk("");
+  return { rewritten, skipped };
+}
+
+/**
  * `tread cp <src> <dst>` — duplicate an environment, leaving the two unrelated.
  */
 export function copyEnv(srcName: string, dstName: string): CopyResult {
@@ -164,5 +230,8 @@ export function copyEnv(srcName: string, dstName: string): CopyResult {
   // after the rename, so the links and the generated tread skill are written
   // against the final path rather than the staging one
   ensureSkeleton(dst);
+  const rw = rewritePaths(dst, src, dst);
+  result.rewritten = rw.rewritten;
+  result.skipped.push(...rw.skipped);
   return result;
 }

@@ -178,6 +178,58 @@ describe("copyEnv", () => {
     expect(fs.readdirSync(envsDir()).filter((n) => n.startsWith(".cp-"))).toEqual([]);
   });
 
+  test("dst 里没有任何文件含 src 的绝对路径", () => {
+    const src = envDir("src");
+    const bad: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isSymbolicLink()) continue; // links point at the real home
+        if (e.isDirectory()) {
+          walk(p);
+          continue;
+        }
+        if (!e.isFile()) continue;
+        const buf = fs.readFileSync(p);
+        if (buf.includes(0)) continue; // binary
+        if (buf.toString("utf8").includes(src)) bad.push(p);
+      }
+    };
+    walk(envDir("dst"));
+    expect(bad).toEqual([]);
+  });
+
+  test("重写的是完整绝对路径，改成 dst 自己的", () => {
+    const dst = envDir("dst");
+    const settings = fs.readFileSync(path.join(dst, ".claude/settings.json"), "utf8");
+    expect(settings).toContain(`${dst}/.fintopia/start.mjs`);
+    const toml = fs.readFileSync(path.join(dst, ".kimi-code/config.toml"), "utf8");
+    expect(toml).toContain(`${dst}/.agents/skills`);
+    const plugins = fs.readFileSync(
+      path.join(dst, ".claude/plugins/installed_plugins.json"), "utf8",
+    );
+    expect(plugins).toContain(`${dst}/.claude/plugins/cache`);
+  });
+
+  test("重写数计入结果，二进制文件不动", () => {
+    const src = createEnv("bin");
+    fs.writeFileSync(
+      path.join(src, ".claude/settings.json"),
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            { matcher: "*", hooks: [{ type: "command", command: `${src}/.fintopia/start.mjs` }] },
+          ],
+        },
+      }),
+    );
+    const blob = Buffer.concat([Buffer.from(src), Buffer.from([0, 1, 2])]);
+    fs.writeFileSync(path.join(src, ".claude/blob.bin"), blob);
+    const r = copyEnv("bin", "bin2");
+    expect(r.rewritten).toBe(1);
+    expect(fs.readFileSync(path.join(r.root, ".claude/blob.bin"))).toEqual(blob);
+  });
+
   test("listEnvs 不把 cp 的临时目录当成环境", () => {
     const leftover = path.join(envsDir(), ".cp-leftover.999");
     fs.mkdirSync(leftover, { recursive: true });
