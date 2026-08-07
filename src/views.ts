@@ -2,7 +2,7 @@ import path from "node:path";
 import { AGENTS, isAgent, type Agent } from "./agents.ts";
 import { lastUsed, listEnvs } from "./env.ts";
 import { agentDir, envsDir, skillsDir } from "./paths.ts";
-import { hookCount, inventory, MASK, type Inventory } from "./inspect/index.ts";
+import { commandLabel, hookCount, inventory, MASK, type Inventory } from "./inspect/index.ts";
 import { cheapCheck, fullProbe, type ProbeResult } from "./probe.ts";
 import {
   color, colorsEnabled, displayWidth, relTime, table, tildify, truncateMiddle,
@@ -169,7 +169,7 @@ export function hooksList(envRoot: string, a: Agent): string {
   const rows = items.map((h) => [
     h.event,
     c.dim(h.matchers.length ? h.matchers.join("|") : DASH),
-    path.basename(h.command.split(/\s+/)[0] ?? h.command),
+    commandLabel(h.command),
   ]);
   const total = hookCount(items);
   return (

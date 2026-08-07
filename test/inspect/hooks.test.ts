@@ -42,7 +42,37 @@ timeout = 10
 });
 afterAll(() => fs.rmSync(env, { recursive: true, force: true }));
 
-const { readHooks, hookCount } = await import("../../src/inspect/hooks.ts");
+const { readHooks, hookCount, commandLabel } = await import("../../src/inspect/hooks.ts");
+
+describe("commandLabel", () => {
+  test("剥掉引号，并跳过解释器取真正跑的脚本", () => {
+    // the bug this fixes: the list column rendered `node"` — quotes kept, and
+    // the interpreter shown instead of the script that carries the meaning
+    expect(
+      commandLabel(
+        '"/Users/me/.asdf/installs/nodejs/25.9.0/bin/node" ' +
+          '"/env/.fintopia/scripts/agents/claude-session-start.mjs" claude-code',
+      ),
+    ).toBe("claude-session-start.mjs");
+    expect(commandLabel("bash '/Users/me/.claude/hooks/herdr-agent-state.sh' session"))
+      .toBe("herdr-agent-state.sh");
+  });
+
+  test("没有解释器时就是命令本身", () => {
+    expect(commandLabel("~/.claude/hooks/cbm-session-reminder")).toBe("cbm-session-reminder");
+    expect(commandLabel("bridge --source cursor")).toBe("bridge");
+  });
+
+  test("跳过 env 前缀和解释器参数", () => {
+    expect(commandLabel("env FOO=1 BAR=2 node /x/run.mjs")).toBe("run.mjs");
+    expect(commandLabel("python3 -u /x/tool.py")).toBe("tool.py");
+  });
+
+  test("只有解释器时不至于回退成空", () => {
+    expect(commandLabel("node")).toBe("node");
+    expect(commandLabel("")).toBe("");
+  });
+});
 
 describe("readHooks", () => {
   test("claude: 同 event 同命令的 matcher 合并成一行，count 记真实条数", () => {

@@ -3,9 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { AGENTS, type Agent } from "../agents.ts";
 import { requireEnv } from "../env.ts";
-import { hookCount, inventory, MASK, type Inventory } from "../inspect/index.ts";
+import { commandLabel, hookCount, inventory, MASK, type Inventory } from "../inspect/index.ts";
 import { cheapCheck, fullProbe, type ProbeResult } from "../probe.ts";
-import { tildify, truncateMiddle } from "../render.ts";
+import { displayWidth, tildify } from "../render.ts";
 import { mount } from "./mount.ts";
 import { pickLayout, scrollWindow } from "./layout.ts";
 import { TooSmall } from "./TooSmall.tsx";
@@ -53,10 +53,36 @@ function rowsOf(
         trim([
           h.event,
           h.matchers.length ? h.matchers.join("│") : "—",
-          path.basename(h.command.split(/\s+/)[0] ?? h.command),
+          commandLabel(h.command),
         ]),
       );
   }
+}
+
+/**
+ * Break a value into lines that fit. Prefers a space, since a command reads
+ * better split between arguments, but falls back to a hard cut — a long path
+ * has no spaces and still has to be readable in full.
+ */
+function wrapValue(v: string, max: number): string[] {
+  if (max <= 0) return [v];
+  const lines: string[] = [];
+  let rest = v;
+  while (displayWidth(rest) > max) {
+    let cut = 0;
+    let taken = "";
+    for (const ch of rest) {
+      if (displayWidth(taken + ch) > max) break;
+      taken += ch;
+      cut += ch.length;
+    }
+    const space = taken.lastIndexOf(" ");
+    if (space > max / 2) cut = space + 1;
+    lines.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut);
+  }
+  lines.push(rest);
+  return lines;
 }
 
 function detailOf(
@@ -263,9 +289,16 @@ export function EnvBrowser({
         ) : null}
         <box flexDirection="column" marginTop={1}>
           {d.pairs.map(([k, v], i) => (
-            <box key={`${k}-${i}`} flexDirection="row">
-              <text fg={FG.dim}>{k.padEnd(labelWidth + 2)}</text>
-              <text fg={FG.normal}>{truncateMiddle(v, maxVal)}</text>
+            <box key={`${k}-${i}`} flexDirection="column">
+              {/* the detail view exists to show the whole value; a command or
+                  path elided in the middle is exactly the thing you opened it
+                  to read, so wrap onto continuation lines instead */}
+              {wrapValue(v, maxVal).map((line, j) => (
+                <box key={j} flexDirection="row">
+                  <text fg={FG.dim}>{(j === 0 ? k : "").padEnd(labelWidth + 2)}</text>
+                  <text fg={FG.normal}>{line}</text>
+                </box>
+              ))}
             </box>
           ))}
         </box>

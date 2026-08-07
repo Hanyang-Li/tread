@@ -36,4 +36,4 @@ export * from "./types.ts";
 export { readSkills } from "./skills.ts";
 export { readPlugins } from "./plugins.ts";
 export { readMcp, rawHeaders } from "./mcp.ts";
-export { readHooks, hookCount, hookFile } from "./hooks.ts";
+export { readHooks, hookCount, hookFile, commandLabel } from "./hooks.ts";
