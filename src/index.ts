@@ -8,13 +8,20 @@ function quietEpipe(e: unknown): void {
   throw e;
 }
 process.stdout.on("error", quietEpipe);
+process.stderr.on("error", () => {});
 
-function write(s: string): void {
-  try {
-    process.stdout.write(s);
-  } catch (e) {
-    quietEpipe(e);
-  }
+function writer(stream: NodeJS.WriteStream): (s: string) => void {
+  return (s) => {
+    try {
+      stream.write(s);
+    } catch (e) {
+      quietEpipe(e);
+    }
+  };
 }
 
-process.exitCode = await runCommand(process.argv.slice(2), write);
+process.exitCode = await runCommand(
+  process.argv.slice(2),
+  writer(process.stdout),
+  writer(process.stderr),
+);

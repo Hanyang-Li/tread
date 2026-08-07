@@ -106,6 +106,7 @@ export interface Palette {
   dim: (s: string) => string;
   red: (s: string) => string;
   green: (s: string) => string;
+  brightGreen: (s: string) => string;
   yellow: (s: string) => string;
   bold: (s: string) => string;
   inverse: (s: string) => string;
@@ -117,11 +118,12 @@ export function color(on: boolean): Palette {
         dim: wrap("2"),
         red: wrap("31"),
         green: wrap("32"),
+        brightGreen: wrap("38;2;155;214;146"),
         yellow: wrap("33"),
         bold: wrap("1"),
         inverse: wrap("7"),
       }
-    : { dim: id, red: id, green: id, yellow: id, bold: id, inverse: id };
+    : { dim: id, red: id, green: id, brightGreen: id, yellow: id, bold: id, inverse: id };
 }
 
 export function colorsEnabled(): boolean {

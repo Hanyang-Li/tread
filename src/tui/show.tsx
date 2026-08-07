@@ -205,15 +205,9 @@ export function EnvBrowser({
             setAgentIdx((i) => (i + 1) % AGENTS.length);
             setCursor(0);
             break;
+          // space is the one "open this" key: on a section it folds, on a
+          // row it drills in. The two can never apply to the same node.
           case "space":
-            if (node?.kind === "section") {
-              setOpen((s) => {
-                const next = new Set(s);
-                next.has(node.cat) ? next.delete(node.cat) : next.add(node.cat);
-                return next;
-              });
-            }
-            break;
           case "return":
             if (node?.kind === "item") setDetail({ cat: node.cat, index: node.index });
             else if (node?.kind === "section") {
@@ -290,8 +284,8 @@ export function EnvBrowser({
 
   const footer =
     layout.mode === "minimal"
-      ? " ←→ ↑↓ ␣ ⏎ t esc q "
-      : " ←→ agent   ↑↓   ␣ fold   ⏎ detail   t probe mcp   esc back   q quit ";
+      ? " ←→ ↑↓ ␣ t esc q "
+      : " ←→ agent   ↑↓ move   ␣ fold / detail   t probe mcp   esc back   q quit ";
 
   return (
     <box

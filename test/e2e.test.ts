@@ -138,4 +138,39 @@ describe("e2e", () => {
     expect(out).toContain(`KIMI=${path.join(state, "envs/x/.kimi-code")}`);
     expect(out).toContain("AFTER=[][]");
   }, 30000);
+
+  test("use 一个不存在的环境：直报错，绝不把错误文本 eval 进 shell", async () => {
+    const init = (await tread(["init", "zsh"])).out;
+    const script = path.join(tmp, "bad.zsh");
+    fs.writeFileSync(
+      script,
+      `${init}\n` +
+        `tread() { case "$1" in use|deactivate) local __o; __o=$(bun run ${CLI} _export "$@") || return $?; eval "$__o";; *) bun run ${CLI} "$@";; esac }\n` +
+        `tread use nope\n` +
+        `echo "code=$?"\n`,
+    );
+    const p = Bun.spawn(["zsh", script], {
+      env: { ...process.env, TREAD_STATE_DIR: state, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, err] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+    ]);
+    await p.exited;
+    expect(err).toContain('no environment named "nope"');
+    expect(out).toContain("code=1");
+    // the old bug: the error text reached eval and zsh tried to run it
+    expect(err).not.toContain("command not found");
+    expect(err).not.toContain("no matches found");
+  }, 30000);
+
+  test("use / deactivate 成功时在 stderr 上给出提示", async () => {
+    const a = await tread(["_export", "use", "x"]);
+    expect(a.err).toContain("tread: x");
+    expect(a.out).toContain("export TREAD_ENV=");
+    const b = await tread(["_export", "deactivate"]);
+    expect(b.err).toContain("tread: deactivated");
+  }, 20000);
 });

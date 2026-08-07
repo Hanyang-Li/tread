@@ -5,8 +5,8 @@ import {
   createEnv, ensureSkeleton, lastUsed, listEnvs, removeEnv, requireEnv, resolveEnv,
 } from "./env.ts";
 import { activationEnv, agentDir, envDir, skillsDir, stateDir } from "./paths.ts";
-import { deactivateLines, exportLines, initSnippet, shellLoaded } from "./shell.ts";
-import { colorsEnabled, color, formatError, relTime, table, tildify } from "./render.ts";
+import { deactivateLines, exportLines, initSnippet, shellLoaded, writeInit } from "./shell.ts";
+import { colorsEnabled, color, formatError, table, tildify } from "./render.ts";
 import {
   hooksList, isCategory, lsPlain, mcpDetail, mcpList, pluginDetail, pluginsList,
   showPlain, skillDetail, skillsList, splitTargets, statusAll, statusOne, hookDetail,
@@ -155,10 +155,9 @@ function rmCommand(args: string[], out: Out): number {
   }
   if (!force) {
     const c = color(colorsEnabled());
-    out(`remove  ${tildify(root)}\n\n`);
-    const rows = AGENTS.map((a) => [`  ${AGENT_SPECS[a].dir}`, dirSize(agentDir(root, a))]);
-    out(table(rows, { align: ["left", "right"] }).join("\n") + "\n\n");
-    const answer = prompt(`${c.yellow("this cannot be undone.")} [y/N]`);
+    const answer = prompt(
+      `remove ${tildify(root)}\n${c.yellow("this cannot be undone.")} [y/N]`,
+    );
     if (answer?.trim().toLowerCase() !== "y") {
       out("aborted\n");
       return 1;
@@ -169,37 +168,6 @@ function rmCommand(args: string[], out: Out): number {
   return 0;
 }
 
-function dirSize(dir: string): string {
-  let total = 0;
-  const walk = (d: string) => {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(d, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      const p = path.join(d, e.name);
-      if (e.isSymbolicLink()) continue;
-      if (e.isDirectory()) walk(p);
-      else {
-        try {
-          total += fs.statSync(p).size;
-        } catch {}
-      }
-    }
-  };
-  walk(dir);
-  if (total === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  let i = 0;
-  let n = total;
-  while (n >= 1024 && i < units.length - 1) {
-    n /= 1024;
-    i++;
-  }
-  return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
-}
 
 function pathCommand(args: string[], out: Out): number {
   const { envName, agent, name: category } = splitTargets(args);
@@ -316,14 +284,25 @@ const SHELL_NOT_LOADED =
   "  or run a one-off without activating:\n" +
   "      tread exec <env> -- claude";
 
-export async function runCommand(argv: string[], out: Out): Promise<number> {
+export async function runCommand(argv: string[], out: Out, err: Out = out): Promise<number> {
   const args = [...argv];
   const cmd = args.shift();
+  const c = color(colorsEnabled());
   try {
     switch (cmd) {
       case "init": {
+        const write = takeFlag(args, "--write", "-w");
         const target = args[0];
         if (!target) throw new Error("init needs a shell\n\n  tread init zsh");
+        if (write) {
+          const { file, changed } = writeInit(target);
+          err(
+            changed
+              ? `tread: added to ${tildify(file)}\n  restart your shell, or: source ${tildify(file)}\n`
+              : `tread: already present in ${tildify(file)}\n`,
+          );
+          return 0;
+        }
         out(initSnippet(target));
         return 0;
       }
@@ -331,13 +310,17 @@ export async function runCommand(argv: string[], out: Out): Promise<number> {
       case "_export": {
         const sub = args.shift();
         if (sub === "deactivate") {
+          // stdout is eval'd by the shell function, so talk on stderr
           out(deactivateLines());
+          err(`tread: deactivated\n`);
           return 0;
         }
         if (sub !== "use") throw new Error(`unknown _export "${sub ?? ""}"`);
         const name = args[0];
         if (!name) throw new Error("use needs a name\n\n  tread use <name>");
-        out(exportLines(name));
+        const lines = exportLines(name);
+        out(lines);
+        err(`tread: ${c.brightGreen(name)}\n`);
         return 0;
       }
 
@@ -422,11 +405,13 @@ export async function runCommand(argv: string[], out: Out): Promise<number> {
         return 0;
 
       default:
-        out(formatError(`unknown command "${cmd}"\n\n  tread help   to see all\n`) + "\n");
+        err(formatError(`unknown command "${cmd}"\n\n  tread help   to see all\n`) + "\n");
         return 1;
     }
   } catch (e) {
-    out(formatError(e instanceof Error ? e.message : String(e)) + "\n");
+    // never stdout: for use/deactivate the caller evals stdout, and an error
+    // message evaluated as shell is how you get "command not found: tread:"
+    err(formatError(e instanceof Error ? e.message : String(e)) + "\n");
     return 1;
   }
 }

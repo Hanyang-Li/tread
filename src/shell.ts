@@ -1,18 +1,25 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { activationEnv } from "./paths.ts";
 import { requireEnv, touchLastUsed } from "./env.ts";
 
 /**
- * `use` and `deactivate` must mutate the caller's shell, so they are eval'd.
+ * `use` and `deactivate` must mutate the caller's shell, so their output is
+ * eval'd — which means a failure must never reach eval. Capture first, bail
+ * on a non-zero exit, only then evaluate. Diagnostics go to stderr.
+ *
  * `ls` can activate too, but it is a TUI: it renders on the terminal and
- * writes the export lines to the --emit file, which the wrapper then evals.
- * `show` is read-only and needs neither.
+ * writes the export lines to the --emit file. `show` is read-only.
  */
 function posix(shell: string): string {
   return `# tread shell integration — eval "$(tread init ${shell})"
 tread() {
   case "$1" in
     use|deactivate)
-      eval "$(command tread _export "$@")" ;;
+      local __o
+      __o=$(command tread _export "$@") || return $?
+      eval "$__o" ;;
     ls)
       local __f
       __f=$(mktemp -t tread) || return 1
@@ -33,7 +40,9 @@ const FISH = `# tread shell integration — tread init fish | source
 function tread
   switch $argv[1]
     case use deactivate
-      command tread _export $argv | source
+      set -l __o (command tread _export $argv | string collect)
+      or return $status
+      echo $__o | source
     case ls
       set -l __f (mktemp -t tread)
       command tread ls $argv[2..] --emit $__f
@@ -75,6 +84,40 @@ export function initSnippet(target: string): string {
         `unknown shell "${target}"\n\n  supported: zsh, bash, fish, starship`,
       );
   }
+}
+
+/** Where `tread init <target> --write` appends. */
+export function rcFile(target: string): string {
+  const home = os.homedir();
+  switch (target) {
+    case "zsh": return path.join(home, ".zshrc");
+    case "bash": return path.join(home, ".bashrc");
+    case "fish": return path.join(home, ".config/fish/config.fish");
+    case "starship": return path.join(home, ".config/starship.toml");
+    default: throw new Error(`unknown shell "${target}"`);
+  }
+}
+
+const MARK = "# >>> tread >>>";
+const MARK_END = "# <<< tread <<<";
+
+/** Append the integration to the shell rc, or report it is already there. */
+export function writeInit(target: string): { file: string; changed: boolean } {
+  const file = rcFile(target);
+  const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  if (existing.includes(MARK)) return { file, changed: false };
+
+  const line =
+    target === "starship"
+      ? initSnippet("starship")
+      : target === "fish"
+        ? "tread init fish | source\n"
+        : `eval "$(tread init ${target})"\n`;
+
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const sep = existing && !existing.endsWith("\n") ? "\n" : "";
+  fs.appendFileSync(file, `${sep}\n${MARK}\n${line}${MARK_END}\n`);
+  return { file, changed: true };
 }
 
 /** Single-quote a value for POSIX shells and fish alike. */

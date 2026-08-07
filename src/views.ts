@@ -30,7 +30,7 @@ function counts(inv: Inventory): (string | null)[] {
 export function statusOne(envRoot: string, name: string, active: boolean): string {
   const c = palette();
   const when = relTime(lastUsed()[name] ?? null);
-  const head = active ? `${c.green("active")} · ${when}` : when;
+  const head = active ? `${c.brightGreen("active")} · ${when}` : when;
   const rows: string[][] = [["", "skills", "plugins", "mcp", "hooks", ""]];
   for (const a of AGENTS) {
     const inv = inventory(envRoot, a);
@@ -56,21 +56,20 @@ export function statusAll(activeName: string | null): string {
   const rows: string[][] = [["", "skills", "plugins", "mcp", "hooks", ""]];
   for (const n of names) {
     const root = path.join(envsDir(), n);
-    let s = 0, p = 0, m = 0, h = 0, any = false;
+    let s = 0, p = 0, m = 0, h = 0;
     for (const a of AGENTS) {
       const inv = inventory(root, a);
-      if (!inv.used) continue;
-      any = true;
       s += inv.skills.length;
       p += inv.plugins.length;
       m += inv.mcp.length;
       h += hookCount(inv.hooks);
     }
+    // always numbers here: mixing "—" and "0" across rows reads as arbitrary.
+    // "never used" belongs in the per-agent view, where it is actionable.
     rows.push([
       n,
-      any ? String(s) : DASH, any ? String(p) : DASH,
-      any ? String(m) : DASH, any ? String(h) : DASH,
-      n === activeName ? c.green("active") : c.dim(relTime(used[n] ?? null)),
+      String(s), String(p), String(m), String(h),
+      n === activeName ? c.brightGreen("active") : c.dim(relTime(used[n] ?? null)),
     ]);
   }
   return (
@@ -86,7 +85,7 @@ export function lsPlain(activeName: string | null): string {
   if (names.length === 0) return "no environments\n\n  tread create <name>\n";
   const used = lastUsed();
   const rows = names.map((n) => [
-    n === activeName ? c.green("*") : " ",
+    n === activeName ? c.brightGreen("*") : " ",
     n,
     c.dim(relTime(used[n] ?? null)),
   ]);
