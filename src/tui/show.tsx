@@ -209,6 +209,10 @@ export function EnvBrowser({
   useKeyboard(
     useCallback(
       (key) => {
+        // every binding here is an unmodified key, so a chord is never meant
+        // for us — without this, Ctrl+L would switch agent instead of doing
+        // whatever the terminal does with it
+        if (key.ctrl || key.meta) return;
         if (detail) {
           if (key.name === "escape" || key.name === "backspace") setDetail(null);
           else if (key.name === "q") onQuit();
@@ -225,10 +229,12 @@ export function EnvBrowser({
             setCursor((c) => Math.min(nodes.length - 1, c + 1));
             break;
           case "left":
+          case "h":
             setAgentIdx((i) => (i + AGENTS.length - 1) % AGENTS.length);
             setCursor(0);
             break;
           case "right":
+          case "l":
             setAgentIdx((i) => (i + 1) % AGENTS.length);
             setCursor(0);
             break;

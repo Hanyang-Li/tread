@@ -41,6 +41,7 @@ function Ls({ emit, exit }: Props) {
   useKeyboard(
     useCallback(
       (key) => {
+        if (key.ctrl || key.meta) return; // chords are not ours
         if (detail) return; // the browser owns the keyboard while open
         switch (key.name) {
           case "up":
