@@ -11,9 +11,9 @@ beforeAll(() => {
 });
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-const { createEnv, listEnvs } = await import("../src/env.ts");
+const { createEnv, listEnvs, touchLastUsed, lastUsed } = await import("../src/env.ts");
 const { copyEnv, volatilePaths } = await import("../src/copy.ts");
-const { envDir, envsDir } = await import("../src/paths.ts");
+const { envDir, envsDir, lastUsedFile, syncLockFile } = await import("../src/paths.ts");
 const { inventory } = await import("../src/inspect/index.ts");
 
 /** A source env holding one of everything the four categories read. */
@@ -286,5 +286,23 @@ describe("环境自己就在真 home 底下", () => {
       else process.env.TREAD_STATE_DIR = prevState;
       fs.rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("cp 与并发状态", () => {
+  test("副本不继承源的时间戳，也不继承锁", () => {
+    const src = createEnv("cp-lu-src");
+    touchLastUsed("cp-lu-src");
+    fs.writeFileSync(
+      syncLockFile(src),
+      JSON.stringify({ pid: 999_999, host: "some-other-host", at: Date.now() }),
+    );
+
+    const dst = copyEnv("cp-lu-src", "cp-lu-dst").root;
+    expect(fs.existsSync(lastUsedFile(dst))).toBe(false);
+    expect(fs.existsSync(syncLockFile(dst))).toBe(false);
+    // a copy has not been used yet, so it shows as never used
+    expect(lastUsed()["cp-lu-dst"]).toBeUndefined();
+    expect(lastUsed()["cp-lu-src"]).toBeDefined();
   });
 });

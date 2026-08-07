@@ -15,6 +15,8 @@ const MAX_REWRITE_BYTES = 8 * 1024 * 1024;
  */
 const SHARED_VOLATILE = [
   ".tread/sync.json", // regenerated for dst; src's copy is src's own ledger
+  ".tread/last-used", // a copy has not been used yet; it earns its own timestamp
+  ".tread/sync.lock", // inheriting one would make dst wait out the full timeout
   ".local/state", // tread's state dir, plus gh and claude lock files
   "Library/Caches", // cursor's compile cache
   "Library/Application Support", // cursor desktop's skill index db, clawhub state
