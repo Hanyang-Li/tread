@@ -74,6 +74,7 @@ function detailOf(
     const s = inv.skills[index]!;
     push("source", s.source);
     push("url", s.sourceUrl);
+    push("registry", s.registry);
     push("path", tildify(s.path));
     push("installed", s.installedAt?.slice(0, 10));
     push("requires", s.requiresBins.join(" "));
@@ -293,7 +294,7 @@ export function EnvBrowser({
       border
       borderStyle="rounded"
       borderColor={BORDER}
-      title={` ${name} `}
+      title={probing ? ` ${name} (probing…) ` : ` ${name} `}
       bottomTitle={footer}
       padding={1}
     >
@@ -303,7 +304,6 @@ export function EnvBrowser({
             <text fg={i === agentIdx ? FG.onSelect : FG.dim}>{` ${a} `}</text>
           </box>
         ))}
-        {probing ? <text fg={FG.dim}>{"   probing…"}</text> : null}
       </box>
 
       <box flexDirection="column" marginTop={1}>

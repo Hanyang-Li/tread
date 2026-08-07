@@ -24,6 +24,21 @@ body
   const bare = path.join(env, ".claude/skills/bare");
   fs.mkdirSync(bare, { recursive: true });
   fs.writeFileSync(path.join(bare, "SKILL.md"), "no frontmatter here\n");
+  // clawhub writes no lock entry: its provenance lives inside the skill folder
+  const claw = path.join(env, ".claude/skills/from-clawhub");
+  fs.mkdirSync(path.join(claw, ".clawhub"), { recursive: true });
+  fs.writeFileSync(path.join(claw, "SKILL.md"), "---\nname: from-clawhub\n---\nbody\n");
+  fs.writeFileSync(
+    path.join(claw, ".clawhub/origin.json"),
+    JSON.stringify({
+      version: 1,
+      registry: "https://datalumina.fintopia.tech/cli/clawhub",
+      slug: "from-clawhub",
+      installedVersion: "1.0.3",
+      installedAt: 1786103009270,
+      fingerprint: "354b2eb",
+    }),
+  );
   fs.mkdirSync(path.join(env, ".claude/skills/empty"), { recursive: true });
   fs.mkdirSync(path.join(env, ".agents"), { recursive: true });
   fs.writeFileSync(
@@ -62,6 +77,19 @@ describe("readSkills", () => {
     expect(s.description).toBeNull();
   });
 
+  test("clawhub 装的 skill 用 origin.json 补出来源、版本和安装时间", () => {
+    const s = readSkills(env, "claude").find((x) => x.name === "from-clawhub")!;
+    expect(s.source).toBe("datalumina.fintopia.tech");
+    expect(s.registry).toBe("https://datalumina.fintopia.tech/cli/clawhub");
+    expect(s.version).toBe("1.0.3");
+    expect(s.installedAt).toBe(new Date(1786103009270).toISOString());
+  });
+
+  test("lock 里的来源优先于 clawhub，且非 clawhub 的 skill 没有 registry", () => {
+    const s = readSkills(env, "claude").find((x) => x.name === "lark-mail")!;
+    expect(s.registry).toBeNull();
+  });
+
   test("没有 SKILL.md 的目录被忽略", () => {
     expect(readSkills(env, "claude").some((x) => x.name === "empty")).toBe(false);
   });
@@ -71,6 +99,10 @@ describe("readSkills", () => {
   });
 
   test("按名字排序", () => {
-    expect(readSkills(env, "claude").map((s) => s.name)).toEqual(["bare", "lark-mail"]);
+    expect(readSkills(env, "claude").map((s) => s.name)).toEqual([
+      "bare",
+      "from-clawhub",
+      "lark-mail",
+    ]);
   });
 });

@@ -1,5 +1,5 @@
 export const FG = {
-  normal: "#d0d0d0",
+  normal: "#ffffff",
   dim: "#8a8a8a",
   active: "#9BD692",
   warn: "#facc15",
@@ -8,8 +8,7 @@ export const FG = {
 } as const;
 
 export const BG = {
-  /** muted, not paper-white — it sits next to dim text all day */
-  select: "#b8b8b8",
+  select: "#ffffff",
   none: undefined,
 } as const;
 

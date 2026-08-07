@@ -197,6 +197,7 @@ export function skillDetail(envRoot: string, a: Agent, name: string): string {
       [
         ["source", s.source],
         ["url", s.sourceUrl],
+        ["registry", s.registry],
         ["path", tildify(s.path)],
         ["installed", s.installedAt ? s.installedAt.slice(0, 10) : null],
         ["requires", s.requiresBins.length ? s.requiresBins.join(" ") : null],

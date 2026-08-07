@@ -7,6 +7,8 @@ export interface SkillInfo {
   /** short, human-facing origin: "open.feishu.cn" | "vercel-labs/agent-skills" */
   source: string | null;
   sourceUrl: string | null;
+  /** clawhub registry this skill came from — only clawhub installs have one */
+  registry: string | null;
   path: string;
   installedAt: string | null;
   requiresBins: string[];

@@ -22,6 +22,41 @@ function readLock(envRoot: string): Record<string, LockEntry> {
   }
 }
 
+interface ClawhubOrigin {
+  registry?: string;
+  installedVersion?: string;
+  installedAt?: number;
+}
+
+/**
+ * clawhub drops its provenance inside the skill folder rather than in a
+ * central lock, so it travels with the folder and is the only origin record
+ * a clawhub-installed skill has.
+ */
+function readClawhubOrigin(dir: string): ClawhubOrigin | null {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(dir, ".clawhub/origin.json"), "utf8"));
+    return j && typeof j === "object" ? j : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Registry URL down to the host, to sit in the same column as "open.feishu.cn". */
+function registryHost(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).host || null;
+  } catch {
+    return url;
+  }
+}
+
+function isoOf(ms: number | undefined): string | null {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
 /**
  * Minimal YAML frontmatter reader: top-level scalars plus the one nested
  * list we care about (metadata.requires.bins). Deliberately not a full YAML
@@ -80,14 +115,16 @@ export function readSkills(envRoot: string, a: Agent): SkillInfo[] {
     }
     const fm = parseFrontmatter(text);
     const l = lock[e.name] ?? {};
+    const ch = readClawhubOrigin(dir);
     out.push({
       name: fm.name ?? e.name,
-      version: fm.version ?? null,
+      version: fm.version ?? ch?.installedVersion ?? null,
       description: fm.description ?? null,
-      source: l.source ?? null,
+      source: l.source ?? registryHost(ch?.registry),
       sourceUrl: l.sourceUrl ?? null,
+      registry: ch?.registry ?? null,
       path: dir,
-      installedAt: l.installedAt ?? null,
+      installedAt: l.installedAt ?? isoOf(ch?.installedAt),
       requiresBins: fm.requiresBins ?? [],
     });
   }
