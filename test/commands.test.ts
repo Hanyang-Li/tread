@@ -171,6 +171,27 @@ describe("commands", () => {
     expect(out).toContain("claude");
   });
 
+  test("doctor <env> 仍查公共项，但只查这一个环境", async () => {
+    await run(["create", "other"]);
+    const { code, out } = await run(["doctor", "work"]);
+    expect(code).toBe(0);
+    // the shared setup is everyone's, so it is still reported
+    expect(out).toContain("shell");
+    expect(out).toContain("shims");
+    expect(out).toContain("checking work only");
+    expect(out).toContain("work");
+    expect(out).not.toContain("other");
+  });
+
+  test("doctor <env> --fix 与未知环境", async () => {
+    expect((await run(["doctor", "work", "--fix"])).code).toBe(0);
+    const r = await run(["doctor", "wrok"]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('no environment named "wrok"');
+    // the typo must not have printed a clean-looking report first
+    expect(r.out).not.toContain("state dir");
+  });
+
   test("help 与未知命令", async () => {
     expect((await run(["help"])).out).toContain("usage: tread");
     const r = await run(["frobnicate"]);

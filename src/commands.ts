@@ -39,7 +39,7 @@ usage: tread <command> [args]
   path [env] [agent] [category]   print a directory
   exec <env> [--home] -- <cmd>    run a command in an environment
   rm <name> [--force]             delete an environment
-  doctor [--fix]                  check the setup
+  doctor [env] [--fix]            check the setup, or just one environment
 
 tread does not install skills, plugins, MCP servers or hooks — activate an
 environment and use each agent's own tooling. It only shows you what is there.
@@ -200,8 +200,18 @@ function pathCommand(args: string[], out: Out): number {
   return 0;
 }
 
+/**
+ * `tread doctor [env] [--fix]`
+ *
+ * The shared setup — shell hook, state dir, shims — is checked either way:
+ * it is what every environment depends on, so naming one env narrows the
+ * per-environment pass, never the common ground it stands on.
+ */
 function doctorCommand(args: string[], out: Out): number {
   const fix = takeFlag(args, "--fix");
+  const only = args[0] ?? null;
+  // fail before printing anything, so a typo does not read as a clean report
+  if (only) requireEnv(only);
   const c = color(colorsEnabled());
   const ok = c.green("ok");
   const rows: string[][] = [];
@@ -213,10 +223,12 @@ function doctorCommand(args: string[], out: Out): number {
       ? `${process.env.TREAD_SHELL}${activeName() ? ` · TREAD_ENV=${activeName()}` : ""}`
       : `eval "$(tread init zsh)"`,
   ]);
+  const envs = only ? [only] : listEnvs();
   rows.push([
     "state dir",
     fs.existsSync(stateDir()) ? ok : c.dim("empty"),
-    `${tildify(stateDir())} · ${listEnvs().length} envs`,
+    `${tildify(stateDir())} · ${listEnvs().length} envs`
+      + (only ? ` · ${c.dim(`checking ${only} only`)}` : ""),
   ]);
   const healthy = shimsHealthy();
   if (!healthy && fix) writeShims();
@@ -233,7 +245,7 @@ function doctorCommand(args: string[], out: Out): number {
   out(table(rows).join("\n") + "\n\n");
 
   let problems = 0;
-  for (const name of listEnvs()) {
+  for (const name of envs) {
     const root = envDir(name);
     const issues: string[] = [];
 
@@ -285,7 +297,12 @@ function doctorCommand(args: string[], out: Out): number {
     );
   }
 
-  if (problems > 0 && !fix) out(`\n${problems} problem${problems === 1 ? "" : "s"}.    tread doctor --fix\n`);
+  if (problems > 0 && !fix) {
+    out(
+      `\n${problems} problem${problems === 1 ? "" : "s"}.` +
+        `    tread doctor ${only ? `${only} ` : ""}--fix\n`,
+    );
+  }
   return 0;
 }
 

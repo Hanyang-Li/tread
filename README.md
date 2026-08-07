@@ -143,7 +143,7 @@ tread hooks   [env] [agent] [event]
 tread path [env] [agent] [category]   打印目录
 tread exec <env> [--home] -- <cmd>    在环境里跑一条命令
 tread rm <name> [--force]             删除环境
-tread doctor [--fix]                  体检
+tread doctor [env] [--fix]            体检（给了 env 就只查这一个）
 ```
 
 `ls` 和 `show` 是 TUI（圆角边框、键盘 + 鼠标、随窗口自适应）。非 TTY、`--plain`、或终端小于 30×8 时自动退回纯文本。

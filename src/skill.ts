@@ -153,8 +153,9 @@ tread exec <env> --home -- <cmd>    # --home also moves HOME for that command
 ## When something looks wrong
 
 \`\`\`sh
-tread doctor         # report only
-tread doctor --fix   # repair: shims, shared links, stale leftovers
+tread doctor               # report only, every environment
+tread doctor --fix         # repair: shims, shared links, stale leftovers
+tread doctor <env> [--fix]  # the shared setup plus that one environment
 \`\`\`
 
 - **Something landed in the user's real home.** Check \`$TREAD_ENV\` first. If it
