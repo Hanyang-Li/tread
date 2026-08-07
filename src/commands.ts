@@ -8,6 +8,7 @@ import {
 import {
   activationEnv, agentDir, envDir, realHome, shimsDir, skillsDir, stateDir,
 } from "./paths.ts";
+import { copyEnv } from "./copy.ts";
 import { realBinary, shimsHealthy, writeShims } from "./shims.ts";
 import { deactivateLines, exportLines, initSnippet, shellLoaded, writeInit } from "./shell.ts";
 import { colorsEnabled, color, formatError, table, tildify } from "./render.ts";
@@ -25,6 +26,7 @@ usage: tread <command> [args]
 
   init <zsh|bash|fish|starship>   print shell integration
   create <name>                   create an environment
+  cp <src> <dst>                  copy an environment
   use <name>                      activate it in this shell
   deactivate                      leave the active environment
   ls                              browse and switch environments
@@ -151,6 +153,26 @@ function createCommand(args: string[], out: Out): number {
   const name = args[0];
   if (!name) throw new Error("create needs a name\n\n  tread create <name>");
   out(`created  ${tildify(createEnv(name))}\n`);
+  return 0;
+}
+
+function cpCommand(args: string[], out: Out): number {
+  const [src, dst] = args;
+  // both names are always explicit. `cp` takes two arguments everywhere else,
+  // and a one-argument form would read as the source or the target depending
+  // on whether an environment happens to be active
+  if (!src || !dst) throw new Error("cp needs two names\n\n  tread cp <src> <dst>");
+  const c = color(colorsEnabled());
+  const r = copyEnv(src, dst);
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const notes = ["skipped sessions and caches", `${plural(r.rewritten, "path")} rewritten`];
+  if (r.skipped.length > 0) notes.push(`${plural(r.skipped.length, "file")} skipped`);
+
+  out(`copied  ${c.bold(src)} → ${c.brightGreen(dst)}\n\n`);
+  // the same renderer `tread status` uses, so the two can never disagree
+  out(statusOne(r.root, dst, false));
+  // the one place the copy admits it was not byte for byte
+  out(c.dim(notes.join(" · ")) + "\n");
   return 0;
 }
 
@@ -406,6 +428,9 @@ export async function runCommand(argv: string[], out: Out, err: Out = out): Prom
 
       case "create":
         return createCommand(args, out);
+
+      case "cp":
+        return cpCommand(args, out);
 
       case "ls": {
         const emit = takeOption(args, "--emit");

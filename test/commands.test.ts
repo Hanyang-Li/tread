@@ -234,4 +234,33 @@ describe("commands", () => {
     // asking for help explicitly is not an error
     expect((await run(["help"])).code).toBe(0);
   });
+
+  test("cp 的表就是 status 的表，外加一行拷贝摘要", async () => {
+    const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+    await run(["create", "orig"]);
+    const r = await run(["cp", "orig", "clone"]);
+    expect(r.code).toBe(0);
+    expect(plain(r.out)).toContain("copied  orig → clone");
+    // the same renderer, so the copy cannot describe the new env differently
+    // from the command whose whole job is describing it
+    const status = await run(["status", "clone"]);
+    expect(plain(r.out)).toContain(plain(status.out).trimEnd());
+    expect(plain(r.out)).toMatch(/skipped sessions and caches · \d+ paths? rewritten/);
+  });
+
+  test("cp 要两个名字，一个不算", async () => {
+    const r = await run(["cp", "orig"]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("tread cp <src> <dst>");
+  });
+
+  test("cp 到已存在的名字是错误，不是静默合并", async () => {
+    const r = await run(["cp", "orig", "clone"]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("already exists");
+  });
+
+  test("help 里有 cp", async () => {
+    expect((await run(["help"])).out).toContain("cp <src> <dst>");
+  });
 });

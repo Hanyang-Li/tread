@@ -136,6 +136,7 @@ tread ls                   # browse and switch (interactive; --plain for text)
 tread status [env]         # what each environment holds
 tread show [env]           # browse one environment
 tread create <name>
+tread cp <src> <dst>       # copy an environment; the two are then unrelated
 tread use <name>           # activate in this shell
 tread deactivate
 tread rm <name> [--force]
