@@ -15,7 +15,7 @@ const {
   createEnv, ensureSkeleton, listEnvs, removeEnv, requireEnv, resolveEnv,
   touchLastUsed, lastUsed, syncHomeLinks,
 } = await import("../src/env.ts");
-const { envDir, skillsDir, agentDir } = await import("../src/paths.ts");
+const { envDir, skillsDir, agentDir, lastUsedFile, syncLockFile } = await import("../src/paths.ts");
 const { hardDeny, defaultAllow, envConfigFile } = await import("../src/config.ts");
 
 /** Write a per-env config layer, then re-sync. */
@@ -350,5 +350,137 @@ describe("env lifecycle", () => {
   test("lastUsed 持久化", () => {
     touchLastUsed("work");
     expect(typeof lastUsed().work).toBe("string");
+  });
+});
+
+describe("lastUsed", () => {
+  test("写在各 env 自己的 .tread/last-used 里，不再有全局单文件", () => {
+    createEnv("lu-a");
+    touchLastUsed("lu-a");
+    expect(fs.existsSync(lastUsedFile(envDir("lu-a")))).toBe(true);
+    expect(typeof lastUsed()["lu-a"]).toBe("string");
+  });
+
+  test("两个 env 各写各的，互不覆盖（回归：全局单文件会丢更新）", () => {
+    createEnv("lu-b");
+    createEnv("lu-c");
+    touchLastUsed("lu-b");
+    touchLastUsed("lu-c");
+    const m = lastUsed();
+    expect(typeof m["lu-b"]).toBe("string");
+    expect(typeof m["lu-c"]).toBe("string");
+  });
+
+  test("没写过的 env 不出现在结果里", () => {
+    createEnv("lu-never");
+    expect(lastUsed()["lu-never"]).toBeUndefined();
+  });
+
+  test("读得到老的 state.json，但不再往里写", () => {
+    createEnv("lu-legacy");
+    const sf = path.join(process.env.TREAD_STATE_DIR!, "state.json");
+    fs.mkdirSync(path.dirname(sf), { recursive: true });
+    fs.writeFileSync(
+      sf,
+      JSON.stringify({ lastUsed: { "lu-legacy": "2020-01-01T00:00:00.000Z" } }),
+    );
+    expect(lastUsed()["lu-legacy"]).toBe("2020-01-01T00:00:00.000Z");
+
+    // its own file wins from then on, and the old one is left untouched
+    touchLastUsed("lu-legacy");
+    expect(lastUsed()["lu-legacy"]).not.toBe("2020-01-01T00:00:00.000Z");
+    expect(JSON.parse(fs.readFileSync(sf, "utf8")).lastUsed["lu-legacy"]).toBe(
+      "2020-01-01T00:00:00.000Z",
+    );
+  });
+
+  test("坏掉的 last-used 只是让那个 env 没有时间戳，不炸", () => {
+    createEnv("lu-bad");
+    fs.writeFileSync(lastUsedFile(envDir("lu-bad")), "");
+    expect(() => lastUsed()).not.toThrow();
+    expect(lastUsed()["lu-bad"]).toBeUndefined();
+  });
+
+  test("删掉 env，时间戳跟着消失", () => {
+    createEnv("lu-rm");
+    touchLastUsed("lu-rm");
+    removeEnv("lu-rm");
+    expect(lastUsed()["lu-rm"]).toBeUndefined();
+  });
+});
+
+describe("sync 互斥", () => {
+  /** A live lock nobody will release, as if another shell were mid-sync. */
+  function plantLive(dir: string): string {
+    const lock = syncLockFile(dir);
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(
+      lock,
+      JSON.stringify({ pid: process.ppid, host: os.hostname(), at: Date.now() }),
+    );
+    return lock;
+  }
+
+  /** The manifest is rewritten on every real sync, so its mtime says whether one ran. */
+  function manifestStamp(dir: string): number {
+    return fs.statSync(path.join(dir, ".tread/sync.json")).mtimeMs;
+  }
+
+  test("dryRun 不拿锁：别人持锁时探查照常返回", () => {
+    const dir = createEnv("lk-dry");
+    const lock = plantLive(dir);
+    expect(() => syncHomeLinks(dir, { dryRun: true })).not.toThrow();
+    fs.rmSync(lock, { force: true });
+  });
+
+  test("别人持锁时写路径超时报错，盘上零改动，锁一放重试即成功", () => {
+    const prev = process.env.TREAD_LOCK_TIMEOUT_MS;
+    process.env.TREAD_LOCK_TIMEOUT_MS = "200";
+    try {
+      const dir = createEnv("lk-busy");
+      const before = fs.readdirSync(dir).sort();
+      const stamp = manifestStamp(dir);
+      const lock = plantLive(dir);
+
+      expect(() => syncHomeLinks(dir)).toThrow(/being synced by another process/);
+      // nothing was written: same entries, and the manifest was never rewritten
+      expect(fs.readdirSync(dir).sort()).toEqual(before);
+      expect(manifestStamp(dir)).toBe(stamp);
+
+      fs.rmSync(lock, { force: true });
+      expect(() => syncHomeLinks(dir)).not.toThrow();
+      expect(manifestStamp(dir)).not.toBe(stamp);
+    } finally {
+      process.env.TREAD_LOCK_TIMEOUT_MS = prev;
+    }
+  });
+
+  test("失效的锁不挡路，且会被清掉", () => {
+    const dir = createEnv("lk-stale");
+    const lock = syncLockFile(dir);
+    fs.writeFileSync(
+      lock,
+      JSON.stringify({ pid: 999_999, host: os.hostname(), at: Date.now() }),
+    );
+    expect(() => ensureSkeleton(dir)).not.toThrow();
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  test("ensureSkeleton 里嵌套的 syncHomeLinks 不自死锁", () => {
+    const prev = process.env.TREAD_LOCK_TIMEOUT_MS;
+    process.env.TREAD_LOCK_TIMEOUT_MS = "200";
+    try {
+      const dir = createEnv("lk-nest");
+      expect(() => ensureSkeleton(dir)).not.toThrow();
+      expect(fs.existsSync(syncLockFile(dir))).toBe(false);
+    } finally {
+      process.env.TREAD_LOCK_TIMEOUT_MS = prev;
+    }
+  });
+
+  test("正常跑完不留锁文件", () => {
+    const dir = createEnv("lk-clean");
+    syncHomeLinks(dir);
+    expect(fs.existsSync(syncLockFile(dir))).toBe(false);
   });
 });

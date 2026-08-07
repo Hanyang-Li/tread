@@ -2,9 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AGENTS, AGENT_SPECS } from "./agents.ts";
-import { agentDir, envDir, envsDir, realHome, skillsDir, stateFile } from "./paths.ts";
+import {
+  agentDir, envDir, envsDir, lastUsedFile, realHome, skillsDir, stateFile, syncLockFile,
+} from "./paths.ts";
 import { hardDeny, resolveConfig, type ConfigProblem } from "./config.ts";
 import { installTreadSkill } from "./skill.ts";
+import { writeFileAtomic } from "./atomic.ts";
+import { withLock } from "./lock.ts";
 
 /** Entries tread itself writes into an agent dir when creating the skeleton. */
 export const SKELETON_ENTRIES = new Set(["config.toml", "credentials", "oauth"]);
@@ -138,9 +142,9 @@ function readManifest(envRoot: string): string[] | null {
 }
 
 function writeManifest(envRoot: string, paths: string[]): void {
-  const f = manifestFile(envRoot);
-  fs.mkdirSync(path.dirname(f), { recursive: true });
-  fs.writeFileSync(f, JSON.stringify({ version: 1, paths }, null, 2) + "\n");
+  // atomic even though the lock already serialises writers: a crash halfway
+  // through would otherwise leave JSON that only `discoverExisting` can undo
+  writeFileAtomic(manifestFile(envRoot), JSON.stringify({ version: 1, paths }, null, 2) + "\n");
 }
 
 function isDenied(rel: string, root: Node): boolean {
@@ -215,6 +219,16 @@ export function syncHomeLinks(
   envRoot: string,
   { dryRun = false }: { dryRun?: boolean } = {},
 ): SyncResult {
+  // the probe path changes nothing, so it neither needs the lock nor should
+  // queue behind one: a report that raced a concurrent sync is slightly stale,
+  // which is not worth making an interactive command wait for
+  if (dryRun) return syncOnce(envRoot, true);
+  return withLock(syncLockFile(envRoot), path.basename(envRoot), () =>
+    syncOnce(envRoot, false),
+  );
+}
+
+function syncOnce(envRoot: string, dryRun: boolean): SyncResult {
   const home = realHome();
   const added: string[] = [];
   const pruned: string[] = [];
@@ -331,24 +345,30 @@ function seedKimiConfig(envRoot: string): void {
 
 /** Create every agent's config dir plus the links a hijacked HOME needs. Idempotent. */
 export function ensureSkeleton(envRoot: string): SyncResult {
-  for (const a of AGENTS) fs.mkdirSync(agentDir(envRoot, a), { recursive: true });
-  fs.mkdirSync(skillsDir(envRoot, "kimi"), { recursive: true });
-  // tread's own per-env corner: config plus the sync manifest. Hard-denied, so
-  // the sync below can never link over the file that configures it.
-  fs.mkdirSync(path.join(envRoot, ".tread"), { recursive: true });
+  // the whole body writes, not just the sync at the end: two shells activating
+  // the same environment would otherwise interleave their seeding and their
+  // skill install. `syncHomeLinks` below asks for the same lock and is let
+  // through re-entrantly rather than deadlocking against this one.
+  return withLock(syncLockFile(envRoot), path.basename(envRoot), () => {
+    for (const a of AGENTS) fs.mkdirSync(agentDir(envRoot, a), { recursive: true });
+    fs.mkdirSync(skillsDir(envRoot, "kimi"), { recursive: true });
+    // tread's own per-env corner: config plus the sync manifest. Hard-denied,
+    // so the sync below can never link over the file that configures it.
+    fs.mkdirSync(path.join(envRoot, ".tread"), { recursive: true });
 
-  // kimi keeps credentials on disk, so a fresh env would demand a new login.
-  // Link them back to the real home. claude and cursor use the keychain.
-  for (const n of ["credentials", "oauth"]) {
-    const link = path.join(agentDir(envRoot, "kimi"), n);
-    if (fs.existsSync(link) || isLink(link)) continue;
-    fs.symlinkSync(path.join(realHome(), ".kimi-code", n), link);
-  }
-  seedKimiConfig(envRoot);
-  // an agent in here has had its HOME moved out from under it; ship the
-  // explanation next to the agent rather than hoping the user pastes it in
-  installTreadSkill(envRoot);
-  return syncHomeLinks(envRoot);
+    // kimi keeps credentials on disk, so a fresh env would demand a new login.
+    // Link them back to the real home. claude and cursor use the keychain.
+    for (const n of ["credentials", "oauth"]) {
+      const link = path.join(agentDir(envRoot, "kimi"), n);
+      if (fs.existsSync(link) || isLink(link)) continue;
+      fs.symlinkSync(path.join(realHome(), ".kimi-code", n), link);
+    }
+    seedKimiConfig(envRoot);
+    // an agent in here has had its HOME moved out from under it; ship the
+    // explanation next to the agent rather than hoping the user pastes it in
+    installTreadSkill(envRoot);
+    return syncHomeLinks(envRoot);
+  });
 }
 
 export function createEnv(name: string): string {
@@ -399,38 +419,56 @@ export function resolveEnv(name?: string): string {
 }
 
 export function removeEnv(name: string): void {
+  // the timestamp lives inside the environment, so it goes with it
   fs.rmSync(requireEnv(name), { recursive: true, force: true });
-  const s = readState();
-  delete s.lastUsed[name];
-  writeState(s);
 }
 
-interface State {
-  lastUsed: Record<string, string>;
-}
-
-function readState(): State {
+/**
+ * The pre-per-environment global state file.
+ *
+ * Read and never written. Entries fade out on their own: an environment that
+ * gets activated writes its own timestamp, which wins from then on.
+ */
+function readLegacyLastUsed(): Record<string, string> {
   try {
     const j = JSON.parse(fs.readFileSync(stateFile(), "utf8"));
-    return { lastUsed: j?.lastUsed ?? {} };
+    const m = j?.lastUsed;
+    if (!m || typeof m !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(m)) if (typeof v === "string") out[k] = v;
+    return out;
   } catch {
-    return { lastUsed: {} };
+    return {};
   }
 }
 
-function writeState(s: State): void {
-  fs.mkdirSync(path.dirname(stateFile()), { recursive: true });
-  fs.writeFileSync(stateFile(), JSON.stringify(s, null, 2) + "\n");
+function readLastUsed(envRoot: string): string | null {
+  try {
+    return fs.readFileSync(lastUsedFile(envRoot), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 export function lastUsed(): Record<string, string> {
-  return readState().lastUsed;
+  const legacy = readLegacyLastUsed();
+  const out: Record<string, string> = {};
+  for (const name of listEnvs()) {
+    const v = readLastUsed(envDir(name)) ?? legacy[name];
+    if (v) out[name] = v;
+  }
+  return out;
 }
 
+/**
+ * Record that this environment was just activated.
+ *
+ * Atomic, and touching only this environment's own file — so two shells
+ * activating two environments never contend, and two shells activating the
+ * same one both write a valid "now" with no read-modify-write to lose.
+ */
 export function touchLastUsed(name: string): void {
-  const s = readState();
-  s.lastUsed[name] = new Date().toISOString();
-  writeState(s);
+  writeFileAtomic(lastUsedFile(envDir(name)), new Date().toISOString() + "\n");
 }
 
 /** Closest existing name within edit distance 2, else null. */
