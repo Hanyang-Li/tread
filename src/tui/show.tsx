@@ -3,7 +3,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { AGENTS, type Agent } from "../agents.ts";
 import { requireEnv } from "../env.ts";
-import { commandLabel, hookCount, inventory, MASK, type Inventory } from "../inspect/index.ts";
+import {
+  commandLabel,
+  hookCount,
+  inventory,
+  MASK,
+  type Inventory,
+  type McpServerInfo,
+} from "../inspect/index.ts";
 import { cheapCheck, fullProbe, type ProbeResult } from "../probe.ts";
 import { displayWidth, tildify } from "../render.ts";
 import { mount } from "./mount.ts";
@@ -85,12 +92,23 @@ function wrapValue(v: string, max: number): string[] {
   return lines;
 }
 
+/** colours the detail badge: green when it answered, red when it failed */
+type Tone = "ok" | "error" | "muted";
+
+type Detail = {
+  title: string;
+  badge: string;
+  tone: Tone;
+  body: string | null;
+  pairs: [string, string][];
+};
+
 function detailOf(
   inv: Inventory,
   cat: Category,
   index: number,
   probes: Record<string, ProbeResult>,
-): { title: string; badge: string; body: string | null; pairs: [string, string][] } {
+): Detail {
   const pairs: [string, string][] = [];
   const push = (k: string, v: string | null | undefined) => {
     if (v) pairs.push([k, v]);
@@ -104,7 +122,7 @@ function detailOf(
     push("path", tildify(s.path));
     push("installed", s.installedAt?.slice(0, 10));
     push("requires", s.requiresBins.join(" "));
-    return { title: s.name, badge: s.version ?? "", body: s.description, pairs };
+    return { title: s.name, badge: s.version ?? "", tone: "muted", body: s.description, pairs };
   }
   if (cat === "plugins") {
     const p = inv.plugins[index]!;
@@ -116,7 +134,7 @@ function detailOf(
     push("updated", p.updatedAt?.slice(0, 10));
     push("path", p.path ? tildify(p.path) : null);
     if (!p.enabled) push("enabled", "no");
-    return { title: p.name, badge: p.version ?? "", body: p.description, pairs };
+    return { title: p.name, badge: p.version ?? "", tone: "muted", body: p.description, pairs };
   }
   if (cat === "mcp") {
     const m = inv.mcp[index]!;
@@ -137,14 +155,15 @@ function detailOf(
       r?.state === "ok" ? (m.transport === "http" ? "● connected" : "● responds")
       : r?.state === "error" ? `✗ ${r.reason}`
       : "· not checked";
-    return { title: m.name, badge, body: null, pairs };
+    const tone: Tone = r?.state === "ok" ? "ok" : r?.state === "error" ? "error" : "muted";
+    return { title: m.name, badge, tone, body: null, pairs };
   }
   const h = inv.hooks[index]!;
   push("matcher", h.matchers.join(" | "));
   push("timeout", h.timeout !== null ? `${h.timeout}s` : null);
   push("command", h.command);
   push("source", h.source);
-  return { title: h.event, badge: "", body: null, pairs };
+  return { title: h.event, badge: "", tone: "muted", body: null, pairs };
 }
 
 export function EnvBrowser({
@@ -198,13 +217,19 @@ export function EnvBrowser({
     return list;
   }, [inv, open, probes, layout.columns]);
 
-  const runProbe = useCallback(async () => {
-    setProbing(true);
-    const out: Record<string, ProbeResult> = {};
-    for (const m of inv.mcp) out[m.name] = await fullProbe(m);
-    setProbes(out);
-    setProbing(false);
-  }, [inv]);
+  // one server when called from its detail page, all of them from the list.
+  // Results land as each finishes, so a slow server never holds up the rest.
+  const runProbe = useCallback(
+    async (only?: McpServerInfo) => {
+      setProbing(true);
+      for (const m of only ? [only] : inv.mcp) {
+        const r = await fullProbe(m);
+        setProbes((p) => ({ ...p, [m.name]: r }));
+      }
+      setProbing(false);
+    },
+    [inv],
+  );
 
   useKeyboard(
     useCallback(
@@ -216,6 +241,10 @@ export function EnvBrowser({
         if (detail) {
           if (key.name === "escape" || key.name === "backspace") setDetail(null);
           else if (key.name === "q") onQuit();
+          // same key as the list, scoped to the one server you are reading
+          else if (key.name === "t" && detail.cat === "mcp" && !probing) {
+            void runProbe(inv.mcp[detail.index]);
+          }
           return;
         }
         const node = nodes[cursor];
@@ -262,7 +291,7 @@ export function EnvBrowser({
             break;
         }
       },
-      [nodes, cursor, detail, onBack, onQuit, runProbe],
+      [nodes, cursor, detail, inv, probing, onBack, onQuit, runProbe],
     ),
   );
 
@@ -270,6 +299,10 @@ export function EnvBrowser({
 
   if (detail) {
     const d = detailOf(inv, detail.cat, detail.index, probes);
+    const isMcp = detail.cat === "mcp";
+    const badge = isMcp && probing ? "◌ probing…" : d.badge;
+    const tone: Tone = isMcp && probing ? "muted" : d.tone;
+    const badgeFg = tone === "ok" ? FG.ok : tone === "error" ? FG.error : FG.dim;
     const labelWidth = Math.max(0, ...d.pairs.map(([k]) => k.length));
     const maxVal = Math.max(10, width - labelWidth - 8);
     return (
@@ -279,14 +312,14 @@ export function EnvBrowser({
         borderStyle="rounded"
         borderColor={BORDER}
         title={` ${name} · ${agent} · ${detail.cat.replace(/s$/, "")} `}
-        bottomTitle=" esc back   q quit "
+        bottomTitle={isMcp ? " t probe   esc back   q quit " : " esc back   q quit "}
         padding={1}
       >
         <box flexDirection="row">
           <text fg={FG.normal} attributes={1}>
             {d.title}
           </text>
-          {d.badge ? <text fg={FG.dim}>{`   ${d.badge}`}</text> : null}
+          {badge ? <text fg={badgeFg}>{`   ${badge}`}</text> : null}
         </box>
         {d.body ? (
           <text fg={FG.normal} marginTop={1} wrapMode="word">
