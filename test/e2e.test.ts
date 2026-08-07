@@ -298,3 +298,47 @@ describe("e2e", () => {
     });
   });
 });
+
+describe("并发", () => {
+  test("多个进程同时激活不同 env：时间戳一个都不丢", async () => {
+    const names = ["par-a", "par-b", "par-c", "par-d", "par-e"];
+    for (const n of names) expect((await tread(["create", n])).code).toBe(0);
+
+    // genuinely concurrent, not a loop — this is the shape that lost writes
+    const runs = await Promise.all(names.map((n) => tread(["_export", "use", n])));
+    for (const r of runs) expect(r.code).toBe(0);
+
+    for (const n of names) {
+      expect(fs.existsSync(path.join(state, "envs", n, ".tread/last-used"))).toBe(true);
+    }
+    // every one of them kept its timestamp; before, some would have been lost
+    const ls = await tread(["ls"]);
+    for (const n of names) {
+      expect(ls.out).toMatch(new RegExp(`^\\s*${n}\\s+just now$`, "m"));
+    }
+  }, 60000);
+
+  test("同一个 env 被并发激活：都成功，不留锁", async () => {
+    expect((await tread(["create", "par-same"])).code).toBe(0);
+    const runs = await Promise.all(
+      Array.from({ length: 5 }, () => tread(["_export", "use", "par-same"])),
+    );
+    for (const r of runs) expect(r.code).toBe(0);
+    expect(
+      fs.existsSync(path.join(state, "envs", "par-same", ".tread/sync.lock")),
+    ).toBe(false);
+  }, 60000);
+
+  test("锁不跨越 exec 的子进程：agent 在跑时别的 shell 照样能激活", async () => {
+    expect((await tread(["create", "par-exec"])).code).toBe(0);
+    const slow = tread(["exec", "par-exec", "--", "sleep", "3"]);
+    await Bun.sleep(800);
+
+    const t = Date.now();
+    const other = await tread(["_export", "use", "par-exec"]);
+    expect(other.code).toBe(0);
+    // if the lock spanned the spawn this would have waited out the timeout
+    expect(Date.now() - t).toBeLessThan(2500);
+    expect((await slow).code).toBe(0);
+  }, 60000);
+});
