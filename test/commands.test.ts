@@ -177,4 +177,12 @@ describe("commands", () => {
     expect(r.code).toBe(1);
     expect(r.out).toContain("unknown command");
   });
+
+  test("裸 tread 打印 help 但以 1 退出", async () => {
+    const { code, out } = await run([]);
+    expect(out).toContain("usage: tread");
+    expect(code).toBe(1);
+    // asking for help explicitly is not an error
+    expect((await run(["help"])).code).toBe(0);
+  });
 });

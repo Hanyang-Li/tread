@@ -437,9 +437,11 @@ export async function runCommand(argv: string[], out: Out, err: Out = out): Prom
         out(`tread ${VERSION}\n`);
         return 0;
 
+      // bare `tread` is a usage error, not a request for help: still print it,
+      // but exit non-zero so a script that forgot its argument notices
       case undefined:
         out(HELP);
-        return 0;
+        return 1;
 
       default:
         err(formatError(`unknown command "${cmd}"\n\n  tread help   to see all\n`) + "\n");
