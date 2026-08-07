@@ -192,6 +192,34 @@ describe("commands", () => {
     expect(r.out).not.toContain("state dir");
   });
 
+  test("doctor 多环境时 env 级状态同列对齐", async () => {
+    const { out } = await run(["doctor"]);
+    const lines = out.split("\n").filter((l) => /^(work|other)\s/.test(l));
+    expect(lines).toHaveLength(2);
+    // names of different length, so only a table can line the statuses up
+    const at = lines.map((l) => l.indexOf("ok"));
+    expect(at[0]).toBeGreaterThan("other".length);
+    expect(at[0]).toBe(at[1]);
+  });
+
+  test("doctor 有问题的环境在同一列报计数，--fix 后改口", async () => {
+    const dir = path.join(tmp, "state/envs/other/.kimi-code");
+    fs.mkdirSync(dir, { recursive: true });
+    const link = path.join(dir, "credentials");
+    fs.rmSync(link, { force: true });
+    fs.symlinkSync(path.join(tmp, "nowhere"), link);
+
+    const { out } = await run(["doctor", "other"]);
+    expect(out).toMatch(/^other\s+1 problem$/m);
+    expect(out).toContain("broken symlink");
+
+    const fixed = await run(["doctor", "other", "--fix"]);
+    expect(fixed.out).toMatch(/^other\s+1 problem fixed$/m);
+    expect(fixed.out).toContain("(fixed)");
+    // repaired, so the run after it has nothing left to say
+    expect((await run(["doctor", "other"])).out).toMatch(/^other\s+ok$/m);
+  });
+
   test("help 与未知命令", async () => {
     expect((await run(["help"])).out).toContain("usage: tread");
     const r = await run(["frobnicate"]);

@@ -244,31 +244,37 @@ function doctorCommand(args: string[], out: Out): number {
   }
   out(table(rows).join("\n") + "\n\n");
 
-  let problems = 0;
+  // collected rather than printed as they are found: the status column can
+  // only line up once every name is known
+  type Issue = { text: string; fixed: boolean };
+  const results: { name: string; issues: Issue[] }[] = [];
   for (const name of envs) {
     const root = envDir(name);
-    const issues: string[] = [];
+    const issues: Issue[] = [];
+    // what --fix actually repaired, as opposed to what it only reported
+    const found = (text: string, fixed = fix) => issues.push({ text, fixed });
 
     // config is the source of truth and doctor never rewrites it: --fix only
-    // brings the environment back in line with what the config already says
+    // brings the environment back in line with what the config already says,
+    // so these two are reported and never marked fixed
     const sync = syncHomeLinks(root, { dryRun: !fix });
     for (const p of sync.problems) {
-      issues.push(`${tildify(p.file)}   ${p.message}`);
+      found(`${tildify(p.file)}   ${p.message}`, false);
     }
     for (const rel of sync.missing) {
-      issues.push(`${rel}   allowed but not in ${tildify(realHome())}`);
+      found(`${rel}   allowed but not in ${tildify(realHome())}`, false);
     }
     if (sync.added.length > 0) {
-      issues.push(`${sync.added.length} path${sync.added.length === 1 ? "" : "s"} allowed but not linked yet`);
+      found(`${sync.added.length} path${sync.added.length === 1 ? "" : "s"} allowed but not linked yet`);
     }
     if (sync.pruned.length > 0) {
-      issues.push(`${sync.pruned.length} link${sync.pruned.length === 1 ? "" : "s"} no longer allowed`);
+      found(`${sync.pruned.length} link${sync.pruned.length === 1 ? "" : "s"} no longer allowed`);
     }
 
     for (const n of ["credentials", "oauth"]) {
       const link = path.join(agentDir(root, "kimi"), n);
       if (isBrokenLink(link)) {
-        issues.push(`.kimi-code/${n}   broken symlink`);
+        found(`.kimi-code/${n}   broken symlink`);
         if (fix) {
           fs.rmSync(link, { force: true });
           ensureSkeleton(root);
@@ -280,7 +286,7 @@ function doctorCommand(args: string[], out: Out): number {
     if (fs.existsSync(toml)) {
       const text = fs.readFileSync(toml, "utf8");
       if (text.includes("extra_skill_dirs") && !text.includes(want)) {
-        issues.push(`.kimi-code/config.toml   extra_skill_dirs points outside this env`);
+        found(`.kimi-code/config.toml   extra_skill_dirs points outside this env`);
         if (fix) {
           fs.writeFileSync(
             toml,
@@ -289,18 +295,32 @@ function doctorCommand(args: string[], out: Out): number {
         }
       }
     }
-    problems += issues.length;
-    out(
-      issues.length === 0
-        ? `${name}    ${ok}\n`
-        : `${name}\n` + issues.map((i) => `  ${c.red("✗")}  ${i}${fix ? c.dim(" (fixed)") : ""}\n`).join(""),
-    );
+    results.push({ name, issues });
   }
 
-  if (problems > 0 && !fix) {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  // the status column reports what is still wrong, so an env whose every
+  // issue was repaired does not go on claiming problems it no longer has
+  const left = (r: { issues: Issue[] }) => r.issues.filter((i) => !i.fixed).length;
+  const envRows = results.map((r) => [
+    r.name,
+    r.issues.length === 0 ? ok
+    : left(r) === 0 ? c.green(`${plural(r.issues.length, "problem")} fixed`)
+    : c.red(plural(left(r), "problem")),
+  ]);
+  table(envRows).forEach((line, i) => {
+    out(line + "\n");
+    for (const issue of results[i]!.issues) {
+      out(`  ${c.red("✗")}  ${issue.text}${issue.fixed ? c.dim(" (fixed)") : ""}\n`);
+    }
+  });
+
+  const remaining = results.reduce((n, r) => n + left(r), 0);
+  if (remaining > 0) {
     out(
-      `\n${problems} problem${problems === 1 ? "" : "s"}.` +
-        `    tread doctor ${only ? `${only} ` : ""}--fix\n`,
+      `\n${plural(remaining, "problem")}.` +
+        // --fix already ran, so what is left needs a config change, not a rerun
+        (fix ? "\n" : `    tread doctor ${only ? `${only} ` : ""}--fix\n`),
     );
   }
   return 0;
