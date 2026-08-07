@@ -174,3 +174,33 @@ describe("shims", () => {
     expect(out.trim()).toBe(path.join(envRoot, ".claude", "settings.json"));
   });
 });
+
+describe("shim 覆写", () => {
+  test("覆写走替换而非截断：内容还原且始终可执行", () => {
+    writeShims();
+    const target = path.join(shimsDir(), "claude");
+    const want = fs.readFileSync(target, "utf8");
+    expect(want.length).toBeGreaterThan(0);
+
+    // dirty it, then let tread put it back
+    fs.writeFileSync(target, "stale\n", { mode: 0o755 });
+    expect(writeShims()).toContain("claude");
+    expect(fs.readFileSync(target, "utf8")).toBe(want);
+    expect(fs.statSync(target).mode & 0o111).toBeGreaterThan(0);
+  });
+
+  test("覆写期间被 exec 的旧 shim 仍然完整（rename 不动运行中的 inode）", async () => {
+    writeShims();
+    const target = path.join(shimsDir(), "claude");
+    const before = fs.statSync(target).ino;
+    fs.writeFileSync(target, "stale\n", { mode: 0o755 });
+    writeShims();
+    // a replacement, not a truncate-and-write: the file is a new inode
+    expect(fs.statSync(target).ino).not.toBe(before);
+  });
+
+  test("不在 shim 目录里留临时文件", () => {
+    writeShims();
+    expect(fs.readdirSync(shimsDir()).some((n) => n.endsWith(".tmp"))).toBe(false);
+  });
+});

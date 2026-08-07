@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AGENT_SPECS, shimNames, type Agent } from "./agents.ts";
 import { agentDir, shimsDir } from "./paths.ts";
+import { writeFileAtomic } from "./atomic.ts";
 
 /**
  * Resolve a command on PATH, skipping tread's own shim directory so a shim
@@ -72,7 +73,9 @@ export function writeShims(): string[] {
     const body = script(name, agent, realBinary(name));
     const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : null;
     if (existing !== body) {
-      fs.writeFileSync(target, body, { mode: 0o755 });
+      // replace, never truncate-and-write: another shell may be exec'ing this
+      // shim right now, and a half-written one is a broken interpreter line
+      writeFileAtomic(target, body, 0o755);
       written.push(name);
     }
     fs.chmodSync(target, 0o755);
