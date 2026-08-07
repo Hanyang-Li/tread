@@ -124,7 +124,12 @@ tread doctor [--fix]                  体检
 
 `tread mcp` 默认只做免费检查：http 服务器不发请求，stdio 服务器只查命令存在且可执行。
 
-加 `--probe`（TUI 里按 `t`）才做完整 MCP 握手并列出工具。这是刻意的：**stdio 的 MCP server 没有"连接"可观测**——它是 agent 每次会话 fork 出来的子进程，探测它等于新起一个实例；而 http 探测会把你存的凭证发出去。这两件事都应该由你按下按键那一刻触发。
+加 `--probe`（TUI 里按 `t`）才做完整 MCP 握手并列出工具。握手是**流式读到应答就停**，
+不等 server 退出或流关闭——MCP server 应答后本来就继续活着。
+
+http 探测先走 `fetch`，失败再退回 `curl`。Bun 的 fetch 不支持 socks5，也会把某些本地代理
+在 CONNECT 应答里带的 `Transfer-Encoding: chunked` 判成非法响应；curl 两样都能处理，
+且读同一套代理环境变量。所以 `ep tread mcp … --probe` 这种带代理的用法能正常工作。这是刻意的：**stdio 的 MCP server 没有"连接"可观测**——它是 agent 每次会话 fork 出来的子进程，探测它等于新起一个实例；而 http 探测会把你存的凭证发出去。这两件事都应该由你按下按键那一刻触发。
 
 MCP 的 header 与 env **只显示 key，值一律打码**。
 
@@ -150,7 +155,7 @@ tread init starship
 
 ```bash
 bun install
-bun test              # 127 个测试，含 e2e
+bun test              # 129 个测试，含 e2e
 bun run typecheck
 bun run src/index.ts  # 直接从源码跑
 ```
