@@ -38,6 +38,11 @@ describe("paths", () => {
     expect(e.KIMI_CODE_HOME).toBe("/e/work/.kimi-code");
   });
 
+  test("每个环境自己的 tread 文件都在 .tread 下", () => {
+    expect(p.lastUsedFile("/e/work")).toBe("/e/work/.tread/last-used");
+    expect(p.syncLockFile("/e/work")).toBe("/e/work/.tread/sync.lock");
+  });
+
   test("realHome 认 TREAD_HOME，不被 shim 移动过的 HOME 骗到", () => {
     const prevHome = process.env.HOME;
     const prevState = process.env.TREAD_STATE_DIR;

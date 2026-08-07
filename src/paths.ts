@@ -63,6 +63,23 @@ export function skillsDir(envRoot: string, a: Agent): string {
 }
 
 /**
+ * When this environment was last activated.
+ *
+ * Per environment rather than one global map: the timestamp is a property of
+ * the environment, and a shared file made every activation a read-modify-write
+ * on the same path, so two shells activating different environments at the
+ * same moment lost one of the two writes.
+ */
+export function lastUsedFile(envRoot: string): string {
+  return path.join(envRoot, ".tread", "last-used");
+}
+
+/** Guards the writing half of `ensureSkeleton` against a concurrent activation. */
+export function syncLockFile(envRoot: string): string {
+  return path.join(envRoot, ".tread", "sync.lock");
+}
+
+/**
  * The variables `tread use` exports into the caller's shell.
  *
  * HOME is deliberately absent: cursor and kimi need it moved, but rewriting
