@@ -3,7 +3,7 @@ import { AGENTS, type Agent } from "./agents.ts";
 import { writeFileAtomic } from "./atomic.ts";
 import { listEnvs, resolveEnv } from "./env.ts";
 import { readHooks, readMcp, readPlugins, readSkills } from "./inspect/index.ts";
-import { completionFile } from "./paths.ts";
+import { completionFile, dataDir } from "./paths.ts";
 import { SHELLS } from "./shell.ts";
 import { CATEGORIES, isCategory, splitTargets, type Category } from "./views.ts";
 
@@ -47,7 +47,10 @@ export const COMMANDS: Candidate[] = [
  * as several candidates.
  */
 export function renderCandidate(c: Candidate): string {
-  const value = c.value.replaceAll(":", "\\:");
+  // the value needs flattening as much as the description does: a skill
+  // directory name may legally contain a newline, and one candidate that
+  // spans two lines reads back as two candidates
+  const value = c.value.replace(/\s+/g, " ").trim().replaceAll(":", "\\:");
   const description = c.description?.replace(/\s+/g, " ").trim();
   return description ? `${value}:${description}` : value;
 }
@@ -115,11 +118,16 @@ function targetCandidates(cmd: string, typed: string[]): Candidate[] {
   // skills work <TAB>` may still be naming an agent, but it may equally be
   // naming a skill, which categoryCommand resolves against claude by default
   if (!isCategory(cmd) || (envName === null && agent === null)) return out;
+  let root: string;
   try {
-    out.push(...itemCandidates(resolveEnv(envName ?? undefined), agent ?? "claude", cmd));
+    root = resolveEnv(envName ?? undefined);
   } catch {
     // nothing typed and nothing active: there is no environment to read
+    return out;
   }
+  // deliberately outside the catch: the readers already swallow their own
+  // parse errors, so anything thrown here is a bug that should surface
+  out.push(...itemCandidates(root, agent ?? "claude", cmd));
   return out;
 }
 
@@ -180,6 +188,34 @@ _tread_ask() {
 _tread_envs()   { _tread_ask environment envs }
 _tread_shells() { _tread_ask shell shells }
 
+# \`exec\`'s rest-spec swallows every word from here on, options included: once
+# _arguments hands a word to a "*:::" rest-arg it never goes back to testing
+# --home against it, so this is the only place left that can still offer it.
+# Before the literal "--" arrives, the sole legal next word is --home (unless
+# it was already given, which opt_args — populated by the enclosing
+# _arguments call — still lets us see); after "--" arrives, drop it and let
+# _normal complete the nested command, which would otherwise treat "--"
+# itself as the command and fall through to plain file completion.
+_tread_exec_cmd() {
+  # this action can run more than once per keypress (zsh probes a tag before
+  # it commits to it); words/CURRENT are the real, shared special arrays, so
+  # shifting them in place would make the second run see the already-shifted
+  # state and misread "--" as never having appeared. Local copies confine the
+  # shift to this invocation.
+  local -a words=("$words[@]")
+  local CURRENT=$CURRENT
+  if [[ $words[1] == "--" ]]; then
+    shift words
+    (( CURRENT-- ))
+    _normal
+    return
+  fi
+  local -a opts
+  (( \${+opt_args[--home]} )) || opts+=('--home:point HOME at the environment')
+  (( $#opts )) || return 1
+  _describe -t option option opts
+}
+
 # tread reads \`[env] [agent] [name]\` by position, so the flags typed so far are
 # dropped and the rest handed over exactly as tread itself would read them.
 _tread_targets() {
@@ -232,7 +268,7 @@ _tread() {
         exec)
           _arguments '--home[point HOME at the environment]' \\
                      '1:environment:_tread_envs' \\
-                     '(-)*::command:_normal'
+                     '(-)*:::command:_tread_exec_cmd'
           ;;
         mcp)
           _arguments '--probe[contact each server]' '*: :_tread_targets'
@@ -251,9 +287,16 @@ _tread "$@"
 /**
  * Atomic for the same reason the shims are: compinit may be reading this file
  * right now, and a truncate-then-write would hand it half a function.
+ *
+ * Both modes are set rather than left to the umask, because this directory
+ * goes on fpath: under `umask 002` the defaults are group-writable, and
+ * compinit refuses those with "insecure directories" on every shell start.
+ * An existing directory keeps its mode — mkdir does not revisit one — so a
+ * dir that predates this only gets fixed by removing it and running --write.
  */
 export function writeCompletion(): void {
-  writeFileAtomic(completionFile(), ZSH_COMPLETION);
+  fs.mkdirSync(dataDir(), { recursive: true, mode: 0o755 });
+  writeFileAtomic(completionFile(), ZSH_COMPLETION, 0o644);
 }
 
 /** Missing, or written by a tread that is no longer the one on PATH. */
