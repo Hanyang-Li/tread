@@ -11,13 +11,25 @@ git clone <this-repo> && cd tread
 ./install.sh
 ```
 
-然后把 shell 集成加进 `~/.zshrc`：
+然后装 shell 集成：
+
+```bash
+tread init zsh --write
+```
+
+它做两件事：往 `~/.zshrc` 追加一行 `eval "$(tread init zsh)"`，以及把 tab 补全写到
+`~/.local/share/tread/_tread` 并接进 `fpath`。补全覆盖子命令、环境名、agent 名、类别，
+以及每个环境里实际装着的 skill / plugin / MCP server / hook event。
+
+也可以只把这一行手抄进 `~/.zshrc`：
 
 ```bash
 eval "$(tread init zsh)"
 ```
 
-（`bash` / `fish` 同理；fish 用 `tread init fish | source`。）
+那样不装补全——片段发现 `_tread` 不在就安静跳过，`tread doctor` 会告诉你它没装。
+
+（`bash` / `fish` 同理，但没有补全；fish 用 `tread init fish | source`。）
 
 要求：Bun ≥ 1.3 用于编译，`~/.local/bin` 在 `PATH` 中。**编译产物是自足的单二进制**，运行时不需要 bun。
 
