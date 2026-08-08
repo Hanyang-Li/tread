@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "bun build --compile --minify src/index.ts --outfile dist/tread",
-    "install-global": "./install.sh",
+    "install-global": "./build.sh",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
   },
