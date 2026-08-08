@@ -22,5 +22,7 @@ echo "==> done"
 echo
 echo "  tread: $BIN_DIR/tread   (make sure $BIN_DIR is on your PATH)"
 echo
-echo "  add the shell integration to ~/.zshrc, then restart your shell:"
-echo '      eval "$(tread init zsh)"'
+echo "  install the shell integration, then restart your shell:"
+echo "      tread init zsh --write"
+echo
+echo "  that appends the eval line to ~/.zshrc and installs the tab completion."

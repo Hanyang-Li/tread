@@ -158,7 +158,20 @@ _tread "$@"
 
 ### 6.1 `exec` 的 `--`
 
-`tread exec <env> [--home] -- <cmd>` 里 `--` 之后是任意命令。`_arguments` 用 `'(-)*:::command:_normal'` 把 `--` 之后交还给 zsh 的通用补全，于是 `tread exec work -- cla<TAB>` 会补成 `claude`，`tread exec work -- claude --<TAB>` 会走 claude 自己的补全（如果它有）。
+`tread exec <env> [--home] -- <cmd>` 里 `--` 之后是任意命令，应该交还给 zsh 的通用补全 `_normal`，于是 `tread exec work -- cla<TAB>` 补成 `claude`，`tread exec work -- claude --<TAB>` 走 claude 自己的补全（如果它有）。
+
+**但直接挂 `_normal` 不行**，两种写法都不行——这是实测出来的，写这份 spec 时想当然了：
+
+| 写法 | `_normal` 看到的 |
+|---|---|
+| `'(-)*::command:_normal'` | `words=[work \| -- \| ]`，`CURRENT=3` —— 把 `work` 当成要补的命令，于是补它的参数，最后落到文件名 |
+| `'(-)*:::command:_normal'` | `words=[-- \| ]`，`CURrent=2` —— 把 `--` 当成命令 |
+
+两种都到不了「命令位」。得先把打头的 `--` 剥掉再交给 `_normal`，所以中间要垫一个 `_tread_exec_cmd`。
+
+同一个坑还有第二个症状：`(-)` 一旦吃掉第一个位置参数就不再认选项，于是 `tread exec work -<TAB>` 补不出 `--home`——而 `HELP` 明明写着 `exec <env> [--home] -- <cmd>`。所以那个垫片在 `--` 到来之前还要负责给出 `--home`，靠 `opt_args` 判断它是不是已经给过了。
+
+教训记在这里而不是只记在代码里：**这一段是整个语法里唯一靠读代码看不出对错的地方**，`zsh -n` 能过、单测能过、四轮评审都过了，直到有人真的在 pty 里按了那个键。凡是改 `exec` 分支，必须按键验。
 
 ## 7. `doctor` 的一行
 
