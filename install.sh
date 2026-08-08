@@ -14,6 +14,10 @@ BIN="tread"
 TARGET="aarch64-apple-darwin"
 ASSET="$BIN-$TARGET.tar.gz"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+# The release tarball carries a whole JS runtime, so it is ~25M over a link to
+# GitHub that is often neither fast nor reliable. Retry rather than making the
+# user rerun the whole script.
+RETRY="--retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 20"
 
 info() {
   printf '\033[1;32m✔\033[0m %s\n' "$1"
@@ -64,7 +68,8 @@ command -v shasum >/dev/null 2>&1 || fail "shasum is required"
 if [ -n "${VERSION:-}" ]; then
   tag="$VERSION"
 else
-  tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
+  # shellcheck disable=SC2086  # $RETRY is a deliberate word-split flag list
+  tag=$(curl -fsSL $RETRY "https://api.github.com/repos/$REPO/releases/latest" |
     sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
 fi
 [ -n "$tag" ] || fail "could not resolve the latest version; retry with VERSION=v0.2.0"
@@ -83,8 +88,10 @@ cleanup() {
 trap cleanup EXIT
 
 printf 'downloading %s\n' "$base/$ASSET"
-curl -fsSL --proto '=https' "$base/$ASSET" -o "$tmp/$ASSET" || fail "download failed: $base/$ASSET"
-curl -fsSL --proto '=https' "$base/$ASSET.sha256" -o "$tmp/$ASSET.sha256" || fail "download failed: $base/$ASSET.sha256"
+# shellcheck disable=SC2086  # $RETRY is a deliberate word-split flag list
+curl -fSL --proto '=https' $RETRY "$base/$ASSET" -o "$tmp/$ASSET" || fail "download failed: $base/$ASSET"
+# shellcheck disable=SC2086
+curl -fsSL --proto '=https' $RETRY "$base/$ASSET.sha256" -o "$tmp/$ASSET.sha256" || fail "download failed: $base/$ASSET.sha256"
 
 # --- verify ---
 printf 'verifying checksum\n'
