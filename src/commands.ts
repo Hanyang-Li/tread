@@ -249,6 +249,24 @@ function doctorCommand(args: string[], out: Out): number {
       ? `${process.env.TREAD_SHELL}${activeName() ? ` · TREAD_ENV=${activeName()}` : ""}`
       : `eval "$(tread init zsh)"`,
   ]);
+
+  // next to the shell row: both are the shell integration. Reported, not
+  // counted — like the shims row, it is shared setup, not an environment's
+  // problem. --fix repairs a file that has fallen behind this binary, but
+  // never creates one: installing it is `init zsh --write`'s job, and a fish
+  // user running --fix should not end up with a zsh file.
+  const comp = completionState();
+  if (comp === "stale" && fix) writeCompletion();
+  rows.push([
+    "completion",
+    comp === "ok" ? ok
+    : comp === "missing" ? c.dim("not installed")
+    : fix ? c.green("regenerated") : c.yellow("stale"),
+    comp === "missing"
+      ? `${tildify(completionFile())} · ${c.dim("tread init zsh --write")}`
+      : tildify(completionFile()),
+  ]);
+
   const envs = only ? [only] : listEnvs();
   rows.push([
     "state dir",

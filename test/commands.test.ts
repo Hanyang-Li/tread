@@ -14,7 +14,7 @@ beforeAll(() => {
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 const { runCommand, HELP } = await import("../src/commands.ts");
-const { COMMANDS, renderCandidate } = await import("../src/completion.ts");
+const { COMMANDS, renderCandidate, writeCompletion } = await import("../src/completion.ts");
 const { completionFile } = await import("../src/paths.ts");
 
 async function run(args: string[]): Promise<{ code: number; out: string }> {
@@ -472,5 +472,32 @@ describe("init --write 装补全", () => {
     });
     expect(err).not.toContain("completion");
     expect(fs.existsSync(completionFile())).toBe(false);
+  });
+});
+
+describe("doctor 的 completion 一行", () => {
+  test("文件不存在时报 not installed，且 --fix 不去创建它", async () => {
+    fs.rmSync(completionFile(), { force: true });
+    const plain = await run(["doctor"]);
+    expect(plain.out).toContain("not installed");
+    expect(plain.out).toContain("tread init zsh --write");
+
+    // --fix repairs what is out of line; installing something never installed
+    // is init's job, or a fish user would get a zsh file they never asked for
+    await run(["doctor", "--fix"]);
+    expect(fs.existsSync(completionFile())).toBe(false);
+  });
+
+  test("一致时 ok，被改过时 stale，--fix 后 regenerated 且真的重写了", async () => {
+    writeCompletion();
+    expect((await run(["doctor"])).out).toMatch(/^completion\s+ok/m);
+
+    fs.appendFileSync(completionFile(), "# hand-edited\n");
+    expect((await run(["doctor"])).out).toMatch(/^completion\s+stale/m);
+    // a plain doctor reports and never writes
+    expect(fs.readFileSync(completionFile(), "utf8")).toContain("hand-edited");
+
+    expect((await run(["doctor", "--fix"])).out).toMatch(/^completion\s+regenerated/m);
+    expect(fs.readFileSync(completionFile(), "utf8")).not.toContain("hand-edited");
   });
 });
