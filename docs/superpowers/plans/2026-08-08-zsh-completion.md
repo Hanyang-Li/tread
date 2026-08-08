@@ -151,11 +151,13 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ```ts
 const { runCommand, HELP } = await import("../src/commands.ts");
-const { COMMANDS, renderCandidate, writeCompletion } = await import("../src/completion.ts");
+const { COMMANDS, renderCandidate } = await import("../src/completion.ts");
 const { completionFile } = await import("../src/paths.ts");
 ```
 
 这几行必须留在文件顶层。`describe` 的回调不是 async 函数，把 `await import` 写进去是语法错误。
+
+`writeCompletion` 要等 Task 5 才用得上，Task 5 会自己把它加进这个 import。这里**不要**提前引 —— 它 Task 3 才存在，提前引会让 `bun run typecheck` 在 Task 2、3、4 之间一直是红的。
 
 在 `describe("commands", ...)` 块末尾追加一个新的 describe（放在 `describe("commands")` 之后、文件末尾）：
 
@@ -952,7 +954,13 @@ describe("doctor 的 completion 一行", () => {
 });
 ```
 
-`completionFile` 和 `writeCompletion` 已在 Task 2 的 Step 1 加进文件顶层的 import 了，这里直接用。
+`completionFile` 已在 Task 2 的 Step 1 加进文件顶层的 import 了。`writeCompletion` 还没有 —— 把文件顶层那行补成：
+
+```ts
+const { COMMANDS, renderCandidate, writeCompletion } = await import("../src/completion.ts");
+```
+
+（Task 2 时它还不存在，提前引会让 `bun run typecheck` 变红，所以留到这里加。）
 
 （`colorsEnabled()` 在非 TTY 下返回 false，`bun test` 的 stdout 不是 TTY，所以上面按纯文本断言是对的。若断言意外失败，先 `console.log(JSON.stringify(out))` 看清实际输出，不要盲改正则。）
 
