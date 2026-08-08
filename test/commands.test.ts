@@ -309,12 +309,13 @@ describe("commands", () => {
 
 describe("_complete", () => {
   beforeAll(() => {
-    // a skill and an MCP server to complete, in an env that is not the active one
-    const root = path.join(tmp, "state/envs/work");
-    // earlier tests in this file installed "demo" and the bundled "tread"
-    // guide here; start clean so the item-candidate tests below see exactly
-    // the one skill they set up
-    fs.rmSync(path.join(root, ".claude/skills"), { recursive: true, force: true });
+    // its own environment, built by hand rather than through `tread create`:
+    // that installs the bundled "tread" guide skill into every agent, which
+    // would show up as a stray candidate alongside the one this fixture is
+    // actually about. A hand-built tree has exactly what is written below,
+    // with no dependency on what describe("commands") did to "work" earlier
+    // in this file.
+    const root = path.join(tmp, "state/envs/complete-target");
     const skill = path.join(root, ".claude/skills/lark-mail");
     fs.mkdirSync(skill, { recursive: true });
     fs.writeFileSync(
@@ -368,25 +369,27 @@ describe("_complete", () => {
   });
 
   test("targets 第二格同时给 agent 名和 skill 名，因为两者都可能", async () => {
-    const { out } = await run(["_complete", "targets", "skills", "work"]);
+    const { out } = await run(["_complete", "targets", "skills", "complete-target"]);
     const names = out.trim().split("\n").map((l) => l.split(":")[0]);
     expect(names).toContain("kimi");
     expect(names).toContain("lark-mail");
-    expect(names).not.toContain("work");
+    expect(names).not.toContain("complete-target");
   });
 
   test("targets 给全 env 和 agent 后只剩 item 名", async () => {
-    const { out } = await run(["_complete", "targets", "skills", "work", "claude"]);
+    const { out } = await run(["_complete", "targets", "skills", "complete-target", "claude"]);
     expect(out.trim().split("\n").map((l) => l.split(":")[0])).toEqual(["lark-mail"]);
   });
 
   test("targets 三格填满后不再给候选", async () => {
-    const { out } = await run(["_complete", "targets", "skills", "work", "claude", "lark-mail"]);
+    const { out } = await run([
+      "_complete", "targets", "skills", "complete-target", "claude", "lark-mail",
+    ]);
     expect(out).toBe("");
   });
 
   test("mcp 的名字来自 .mcp.json，纯 zsh 拿不到的那类", async () => {
-    const { out } = await run(["_complete", "targets", "mcp", "work", "claude"]);
+    const { out } = await run(["_complete", "targets", "mcp", "complete-target", "claude"]);
     expect(out).toContain("context7");
   });
 
