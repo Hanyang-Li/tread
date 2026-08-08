@@ -425,3 +425,54 @@ describe("_complete", () => {
     expect(renderCandidate({ value: "x", description: "" })).toBe("x");
   });
 });
+
+describe("init --write 装补全", () => {
+  // init --write appends to the rc file, which rcFile() derives from $HOME —
+  // point it somewhere disposable before letting this near a real ~/.zshrc.
+  // Bun's os.homedir() (unlike Node's) reads $HOME once at startup and never
+  // again, so reassigning process.env.HOME alone does not budge it — patch
+  // the function itself so rcFile() actually resolves under the fake home.
+  // Restored in afterAll: realHome() elsewhere (copyEnv, ensureSkeleton) falls
+  // back to this same os.homedir(), and later test files need the real one.
+  const realHomedir = os.homedir;
+  beforeAll(() => {
+    process.env.HOME = path.join(tmp, "fakehome");
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    os.homedir = () => process.env.HOME as string;
+  });
+  afterAll(() => {
+    os.homedir = realHomedir;
+  });
+
+  test("zsh 第一次是 written，第二次是 rewritten", async () => {
+    let err = "";
+    const first = await runCommand(["init", "zsh", "--write"], () => {}, (s) => {
+      err += s;
+    });
+    expect(first).toBe(0);
+    expect(err).toContain("completion written to");
+    expect(fs.existsSync(completionFile())).toBe(true);
+
+    err = "";
+    await runCommand(["init", "zsh", "--write"], () => {}, (s) => {
+      err += s;
+    });
+    expect(err).toContain("completion rewritten at");
+  });
+
+  test("被手改过的补全，--write 无条件盖回去", async () => {
+    fs.appendFileSync(completionFile(), "# hand-edited\n");
+    await runCommand(["init", "zsh", "--write"], () => {}, () => {});
+    expect(fs.readFileSync(completionFile(), "utf8")).not.toContain("hand-edited");
+  });
+
+  test("bash 的 --write 不碰补全", async () => {
+    fs.rmSync(completionFile(), { force: true });
+    let err = "";
+    await runCommand(["init", "bash", "--write"], () => {}, (s) => {
+      err += s;
+    });
+    expect(err).not.toContain("completion");
+    expect(fs.existsSync(completionFile())).toBe(false);
+  });
+});

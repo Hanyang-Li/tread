@@ -73,6 +73,27 @@ describe("shell integration", () => {
     expect(shellLoaded()).toBe(true);
     delete process.env.TREAD_SHELL;
   });
+
+  test("zsh 片段把补全接进 fpath，bash 片段不接", () => {
+    const z = initSnippet("zsh");
+    expect(z).toContain("autoload -Uz _tread");
+    expect(z).toContain("compdef _tread tread");
+    // guarded three ways: a file that was never written, a doubly-sourced rc,
+    // and an eval line that lands before compinit
+    expect(z).toContain("[[ -r ");
+    expect(z).toContain("${fpath:#");
+    expect(z).toContain("$+functions[compdef]");
+    expect(initSnippet("bash")).not.toContain("compdef");
+  });
+
+  test("zsh 片段能被 zsh 解析", async () => {
+    const zsh = Bun.which("zsh");
+    if (!zsh) return;
+    const f = path.join(tmp, "snippet.zsh");
+    fs.writeFileSync(f, initSnippet("zsh"));
+    const proc = Bun.spawn([zsh, "-n", f], { stdout: "pipe", stderr: "pipe" });
+    expect(await proc.exited).toBe(0);
+  });
 });
 
 // starship 只渲染顶层 format 点名的模块：光追加 [env_var.tread] 表，

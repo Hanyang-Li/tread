@@ -6,12 +6,13 @@ import {
   syncHomeLinks,
 } from "./env.ts";
 import {
-  activationEnv, agentDir, envDir, realHome, shimsDir, skillsDir, stateDir, syncLockFile,
+  activationEnv, agentDir, completionFile, envDir, realHome, shimsDir, skillsDir, stateDir,
+  syncLockFile,
 } from "./paths.ts";
 import { clearStale, staleLock } from "./lock.ts";
 import { homeLeak } from "./leak.ts";
 import { copyEnv } from "./copy.ts";
-import { complete } from "./completion.ts";
+import { complete, completionState, writeCompletion } from "./completion.ts";
 import { realBinary, shimsHealthy, writeShims } from "./shims.ts";
 import { deactivateLines, exportLines, initSnippet, shellLoaded, writeInit } from "./shell.ts";
 import { colorsEnabled, color, formatError, table, tildify, type Palette } from "./render.ts";
@@ -430,6 +431,15 @@ export async function runCommand(argv: string[], out: Out, err: Out = out): Prom
               changed
                 ? `tread: added to ${where}\n  restart your shell, or: source ${where}\n`
                 : `tread: already present in ${where}\n`,
+            );
+          }
+          // bash and fish have no completion here, and starship is not a shell
+          if (target === "zsh") {
+            const first = completionState() === "missing";
+            writeCompletion();
+            err(
+              `tread: completion ${first ? "written to" : "rewritten at"} ` +
+                `${tildify(completionFile())}\n`,
             );
           }
           return 0;

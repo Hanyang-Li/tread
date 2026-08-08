@@ -1,12 +1,33 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { activationEnv, shimsDir } from "./paths.ts";
+import { activationEnv, completionFile, dataDir, shimsDir } from "./paths.ts";
 import { ensureSkeleton, requireEnv, touchLastUsed } from "./env.ts";
 import { writeShims } from "./shims.ts";
 
 /** Everything `tread init` takes. The completion asks for this list by name. */
 export const SHELLS = ["zsh", "bash", "fish", "starship"] as const;
+
+/**
+ * Wire the completion into zsh — if it is there.
+ *
+ * Three guards, one for each way this goes wrong. `-r`: the file is written by
+ * `init zsh --write`, and someone who added the eval line by hand has never run
+ * it, so compdef would register a function that does not exist and the first
+ * TAB would fail. `${fpath:#…}`: a nested shell or a doubly-sourced rc would
+ * otherwise grow fpath without bound — dropping the entry before prepending it
+ * makes the block idempotent. `$+functions[compdef]`: compdef only exists once
+ * compinit has run, and the eval line may well come first; in that order the
+ * fpath entry alone is enough, because compinit picks it up itself.
+ */
+function zshCompletion(): string {
+  const dir = q(dataDir());
+  return `if [[ -r ${q(completionFile())} ]]; then
+  fpath=(${dir} \${fpath:#${dir}})
+  (( $+functions[compdef] )) && { autoload -Uz _tread && compdef _tread tread }
+fi
+`;
+}
 
 /**
  * `use` and `deactivate` must mutate the caller's shell, so their output is
@@ -37,7 +58,7 @@ tread() {
   esac
 }
 export TREAD_SHELL=${shell}
-`;
+${shell === "zsh" ? zshCompletion() : ""}`;
 }
 
 const FISH = `# tread shell integration — tread init fish | source
