@@ -5,6 +5,9 @@ import { activationEnv, shimsDir } from "./paths.ts";
 import { ensureSkeleton, requireEnv, touchLastUsed } from "./env.ts";
 import { writeShims } from "./shims.ts";
 
+/** Everything `tread init` takes. The completion asks for this list by name. */
+export const SHELLS = ["zsh", "bash", "fish", "starship"] as const;
+
 /**
  * `use` and `deactivate` must mutate the caller's shell, so their output is
  * eval'd — which means a failure must never reach eval. Capture first, bail
@@ -86,7 +89,7 @@ export function initSnippet(target: string): string {
       return STARSHIP;
     default:
       throw new Error(
-        `unknown shell "${target}"\n\n  supported: zsh, bash, fish, starship`,
+        `unknown shell "${target}"\n\n  supported: ${SHELLS.join(", ")}`,
       );
   }
 }

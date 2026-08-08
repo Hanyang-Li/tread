@@ -7,12 +7,15 @@ let tmp: string;
 beforeAll(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tread-cmd-"));
   process.env.TREAD_STATE_DIR = path.join(tmp, "state");
+  process.env.TREAD_DATA_DIR = path.join(tmp, "share");
   delete process.env.TREAD_ENV;
   delete process.env.TREAD_SHELL;
 });
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-const { runCommand } = await import("../src/commands.ts");
+const { runCommand, HELP } = await import("../src/commands.ts");
+const { COMMANDS, renderCandidate } = await import("../src/completion.ts");
+const { completionFile } = await import("../src/paths.ts");
 
 async function run(args: string[]): Promise<{ code: number; out: string }> {
   let out = "";
@@ -301,5 +304,121 @@ describe("commands", () => {
 
   test("help 里有 cp", async () => {
     expect((await run(["help"])).out).toContain("cp <src> <dst>");
+  });
+});
+
+describe("_complete", () => {
+  beforeAll(() => {
+    // a skill and an MCP server to complete, in an env that is not the active one
+    const root = path.join(tmp, "state/envs/work");
+    // earlier tests in this file installed "demo" and the bundled "tread"
+    // guide here; start clean so the item-candidate tests below see exactly
+    // the one skill they set up
+    fs.rmSync(path.join(root, ".claude/skills"), { recursive: true, force: true });
+    const skill = path.join(root, ".claude/skills/lark-mail");
+    fs.mkdirSync(skill, { recursive: true });
+    fs.writeFileSync(
+      path.join(skill, "SKILL.md"),
+      "---\nname: lark-mail\ndescription: \"飞书邮箱\"\n---\nbody\n",
+    );
+    fs.writeFileSync(
+      path.join(root, ".claude/.mcp.json"),
+      JSON.stringify({ mcpServers: { context7: { command: "npx", args: [] } } }),
+    );
+  });
+
+  test("commands 列出子命令，且不吐隐藏的那两个", async () => {
+    const { code, out } = await run(["_complete", "commands"]);
+    expect(code).toBe(0);
+    const names = out.trim().split("\n").map((l) => l.split(":")[0]);
+    expect(names).toContain("use");
+    expect(names).toContain("doctor");
+    expect(names).not.toContain("_export");
+    expect(names).not.toContain("_complete");
+  });
+
+  test("COMMANDS 与 HELP 不会各说各话", () => {
+    for (const c of COMMANDS) {
+      expect(HELP).toContain(`  ${c.value} `);
+    }
+  });
+
+  test("envs 列出环境，激活的那个标 active", async () => {
+    process.env.TREAD_ENV = "work";
+    try {
+      const { out } = await run(["_complete", "envs"]);
+      expect(out).toContain("work:active");
+      expect(out).toMatch(/^other$/m);
+    } finally {
+      delete process.env.TREAD_ENV;
+    }
+  });
+
+  test("shells 出四个", async () => {
+    const { out } = await run(["_complete", "shells"]);
+    expect(out.trim().split("\n").sort()).toEqual(["bash", "fish", "starship", "zsh"]);
+  });
+
+  test("targets 第一格给环境名和 agent 名，不给 skill 名", async () => {
+    const { out } = await run(["_complete", "targets", "skills"]);
+    const names = out.trim().split("\n").map((l) => l.split(":")[0]);
+    expect(names).toContain("work");
+    expect(names).toContain("claude");
+    expect(names).not.toContain("lark-mail");
+  });
+
+  test("targets 第二格同时给 agent 名和 skill 名，因为两者都可能", async () => {
+    const { out } = await run(["_complete", "targets", "skills", "work"]);
+    const names = out.trim().split("\n").map((l) => l.split(":")[0]);
+    expect(names).toContain("kimi");
+    expect(names).toContain("lark-mail");
+    expect(names).not.toContain("work");
+  });
+
+  test("targets 给全 env 和 agent 后只剩 item 名", async () => {
+    const { out } = await run(["_complete", "targets", "skills", "work", "claude"]);
+    expect(out.trim().split("\n").map((l) => l.split(":")[0])).toEqual(["lark-mail"]);
+  });
+
+  test("targets 三格填满后不再给候选", async () => {
+    const { out } = await run(["_complete", "targets", "skills", "work", "claude", "lark-mail"]);
+    expect(out).toBe("");
+  });
+
+  test("mcp 的名字来自 .mcp.json，纯 zsh 拿不到的那类", async () => {
+    const { out } = await run(["_complete", "targets", "mcp", "work", "claude"]);
+    expect(out).toContain("context7");
+  });
+
+  test("path 的末格是类别，且要等 agent 定下来才出", async () => {
+    const two = await run(["_complete", "targets", "path", "work"]);
+    expect(two.out).not.toContain("plugins");
+    const three = await run(["_complete", "targets", "path", "work", "claude"]);
+    expect(three.out.trim().split("\n")).toEqual(["skills", "plugins", "mcp", "hooks"]);
+  });
+
+  test("没指定环境又没有激活环境时，输出空而不是报错文本", async () => {
+    delete process.env.TREAD_ENV;
+    const { code, out } = await run(["_complete", "targets", "skills", "claude"]);
+    expect(code).toBe(0);
+    expect(out).toBe("");
+  });
+
+  test("未知请求安静退 1，stdout 一个字都不写", async () => {
+    const { code, out } = await run(["_complete", "bogus"]);
+    expect(code).toBe(1);
+    expect(out).toBe("");
+  });
+
+  // 两条都直接打在 renderCandidate 上。走不了 fixture：skill 的 frontmatter
+  // 解析器是逐行的，描述里塞不进换行；而带冒号的目录名在 macOS 上不可靠。
+  test("值里的冒号要转义，否则 _describe 会把候选拦腰截断", () => {
+    expect(renderCandidate({ value: "a:b" })).toBe("a\\:b");
+    expect(renderCandidate({ value: "a:b", description: "d" })).toBe("a\\:b:d");
+  });
+
+  test("描述里的换行被压平，否则一条候选会裂成好几条", () => {
+    expect(renderCandidate({ value: "x", description: " one\ntwo \n" })).toBe("x:one two");
+    expect(renderCandidate({ value: "x", description: "" })).toBe("x");
   });
 });

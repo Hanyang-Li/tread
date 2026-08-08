@@ -94,7 +94,7 @@ export function lsPlain(activeName: string | null): string {
   return table(rows).join("\n") + "\n\n  tread use <name>\n";
 }
 
-const CATEGORIES = ["skills", "plugins", "mcp", "hooks"] as const;
+export const CATEGORIES = ["skills", "plugins", "mcp", "hooks"] as const;
 export type Category = (typeof CATEGORIES)[number];
 
 export function isCategory(s: string): s is Category {

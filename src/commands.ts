@@ -11,6 +11,7 @@ import {
 import { clearStale, staleLock } from "./lock.ts";
 import { homeLeak } from "./leak.ts";
 import { copyEnv } from "./copy.ts";
+import { complete } from "./completion.ts";
 import { realBinary, shimsHealthy, writeShims } from "./shims.ts";
 import { deactivateLines, exportLines, initSnippet, shellLoaded, writeInit } from "./shell.ts";
 import { colorsEnabled, color, formatError, table, tildify, type Palette } from "./render.ts";
@@ -22,7 +23,7 @@ import {
 
 type Out = (s: string) => void;
 
-const HELP = `tread — isolated environments for AI coding agents
+export const HELP = `tread — isolated environments for AI coding agents
 
 usage: tread <command> [args]
 
@@ -452,6 +453,12 @@ export async function runCommand(argv: string[], out: Out, err: Out = out): Prom
         out(lines);
         err(`tread: ${c.brightGreen(name)}\n`);
         return 0;
+      }
+
+      case "_complete": {
+        const { code, text } = complete(args);
+        if (text) out(text);
+        return code;
       }
 
       case "use":
