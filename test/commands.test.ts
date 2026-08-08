@@ -326,6 +326,25 @@ describe("_complete", () => {
       path.join(root, ".claude/.mcp.json"),
       JSON.stringify({ mcpServers: { context7: { command: "npx", args: [] } } }),
     );
+    fs.mkdirSync(path.join(root, ".claude/plugins"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".claude/plugins/installed_plugins.json"),
+      JSON.stringify({ plugins: { "dataviz@shop": [{ scope: "user", version: "1.0.0" }] } }),
+    );
+    // two handlers under one event, so the dedup in itemCandidates has
+    // something to collapse
+    fs.writeFileSync(
+      path.join(root, ".claude/settings.json"),
+      JSON.stringify({
+        hooks: {
+          PostToolUse: [
+            { matcher: "Edit", hooks: [{ command: "a.sh" }] },
+            { matcher: "Write", hooks: [{ command: "b.sh" }] },
+          ],
+          SessionStart: [{ hooks: [{ command: "c.sh" }] }],
+        },
+      }),
+    );
   });
 
   test("commands 列出子命令，且不吐隐藏的那两个", async () => {
@@ -338,10 +357,14 @@ describe("_complete", () => {
     expect(names).not.toContain("_complete");
   });
 
+  // both directions, because the one that will actually drift is HELP → COMMANDS:
+  // adding a subcommand means touching runCommand and HELP, and completion.ts is
+  // the easy one to forget. The whole design rests on the binary being right.
   test("COMMANDS 与 HELP 不会各说各话", () => {
-    for (const c of COMMANDS) {
-      expect(HELP).toContain(`  ${c.value} `);
-    }
+    const block = HELP.slice(HELP.indexOf("usage:"), HELP.indexOf("tread does not install"));
+    const inHelp = [...block.matchAll(/^ {2}([a-z][a-z-]*)[ <[]/gm)].map((m) => m[1]);
+    expect(inHelp.length).toBeGreaterThan(10);
+    expect(new Set(inHelp)).toEqual(new Set(COMMANDS.map((c) => c.value)));
   });
 
   test("envs 列出环境，激活的那个标 active", async () => {
@@ -379,6 +402,16 @@ describe("_complete", () => {
   test("targets 给全 env 和 agent 后只剩 item 名", async () => {
     const { out } = await run(["_complete", "targets", "skills", "complete-target", "claude"]);
     expect(out.trim().split("\n").map((l) => l.split(":")[0])).toEqual(["lark-mail"]);
+  });
+
+  test("plugins 的名字来自 installed_plugins.json", async () => {
+    const { out } = await run(["_complete", "targets", "plugins", "complete-target", "claude"]);
+    expect(out.trim().split("\n").map((l) => l.split(":")[0])).toEqual(["dataviz"]);
+  });
+
+  test("hooks 出 event 名，同一 event 的两个 handler 只算一条", async () => {
+    const { out } = await run(["_complete", "targets", "hooks", "complete-target", "claude"]);
+    expect(out.trim().split("\n")).toEqual(["PostToolUse", "SessionStart"]);
   });
 
   test("targets 三格填满后不再给候选", async () => {
