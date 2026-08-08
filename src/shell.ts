@@ -1,7 +1,6 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { activationEnv, completionFile, dataDir, shimsDir } from "./paths.ts";
+import { activationEnv, completionFile, dataDir, realHome, shimsDir } from "./paths.ts";
 import { ensureSkeleton, requireEnv, touchLastUsed } from "./env.ts";
 import { writeShims } from "./shims.ts";
 
@@ -117,7 +116,11 @@ export function initSnippet(target: string): string {
 
 /** Where `tread init <target> --write` appends. */
 export function rcFile(target: string): string {
-  const home = os.homedir();
+  // an agent shelling out to `tread init --write` has had HOME moved to the
+  // env root by its shim; os.homedir() would follow it there and the
+  // integration would land in the environment's rc file instead of the
+  // user's real one
+  const home = realHome();
   switch (target) {
     case "zsh": return path.join(home, ".zshrc");
     case "bash": return path.join(home, ".bashrc");

@@ -427,21 +427,19 @@ describe("_complete", () => {
 });
 
 describe("init --write 装补全", () => {
-  // init --write appends to the rc file, which rcFile() derives from $HOME —
-  // point it somewhere disposable before letting this near a real ~/.zshrc.
-  // Bun's os.homedir() (unlike Node's) reads $HOME once at startup and never
-  // again, so reassigning process.env.HOME alone does not budge it — patch
-  // the function itself so rcFile() actually resolves under the fake home.
-  // Restored in afterAll: realHome() elsewhere (copyEnv, ensureSkeleton) falls
-  // back to this same os.homedir(), and later test files need the real one.
-  const realHomedir = os.homedir;
+  // init --write appends to the rc file, which rcFile() derives from
+  // realHome() — point it somewhere disposable before letting this near a
+  // real ~/.zshrc. TREAD_HOME is the override realHome() was built to honor
+  // (src/paths.ts), the same idiom stateDir()/dataDir() already use elsewhere
+  // in this file, so no monkeypatching of a node:os builtin is needed.
+  const prevTreadHome = process.env.TREAD_HOME;
   beforeAll(() => {
-    process.env.HOME = path.join(tmp, "fakehome");
-    fs.mkdirSync(process.env.HOME, { recursive: true });
-    os.homedir = () => process.env.HOME as string;
+    process.env.TREAD_HOME = path.join(tmp, "fakehome");
+    fs.mkdirSync(process.env.TREAD_HOME, { recursive: true });
   });
   afterAll(() => {
-    os.homedir = realHomedir;
+    if (prevTreadHome === undefined) delete process.env.TREAD_HOME;
+    else process.env.TREAD_HOME = prevTreadHome;
   });
 
   test("zsh 第一次是 written，第二次是 rewritten", async () => {
