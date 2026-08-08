@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 
 beforeAll(() => {
   process.env.TREAD_STATE_DIR = "/tmp/tread-paths-test";
+  process.env.TREAD_DATA_DIR = "/tmp/tread-paths-test/share";
 });
 
 const p = await import("../src/paths.ts");
@@ -59,6 +60,25 @@ describe("paths", () => {
       delete process.env.TREAD_HOME;
       if (prevHome !== undefined) process.env.HOME = prevHome;
       if (prevState !== undefined) process.env.TREAD_STATE_DIR = prevState;
+    }
+  });
+
+  test("dataDir 认 TREAD_DATA_DIR，completionFile 落在其下", () => {
+    expect(p.dataDir()).toBe("/tmp/tread-paths-test/share");
+    expect(p.completionFile()).toBe("/tmp/tread-paths-test/share/_tread");
+  });
+
+  test("没有覆盖时 dataDir 走真实的 home，而不是被 shim 改过的 HOME", () => {
+    const savedData = process.env.TREAD_DATA_DIR;
+    const savedHome = process.env.TREAD_HOME;
+    delete process.env.TREAD_DATA_DIR;
+    process.env.TREAD_HOME = "/real/home";
+    try {
+      expect(p.dataDir()).toBe("/real/home/.local/share/tread");
+    } finally {
+      process.env.TREAD_DATA_DIR = savedData;
+      if (savedHome === undefined) delete process.env.TREAD_HOME;
+      else process.env.TREAD_HOME = savedHome;
     }
   });
 });

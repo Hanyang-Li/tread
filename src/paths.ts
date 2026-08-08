@@ -32,6 +32,22 @@ export function shimsDir(): string {
   return path.join(stateDir(), "shims");
 }
 
+/**
+ * Where tread writes files other tools read — the zsh completion, for now.
+ *
+ * The same shape as stateDir(), for the same two reasons: realHome() so that
+ * an agent shelling out to tread does not write into the environment its shim
+ * moved HOME to, and an override so tests can land somewhere temporary.
+ */
+export function dataDir(): string {
+  return process.env.TREAD_DATA_DIR ?? path.join(realHome(), ".local/share/tread");
+}
+
+/** The zsh completion function. zsh autoloads it by this exact file name. */
+export function completionFile(): string {
+  return path.join(dataDir(), "_tread");
+}
+
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function validateEnvName(name: string): void {
