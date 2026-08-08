@@ -9,10 +9,11 @@ import {
   activationEnv, agentDir, envDir, realHome, shimsDir, skillsDir, stateDir, syncLockFile,
 } from "./paths.ts";
 import { clearStale, staleLock } from "./lock.ts";
+import { homeLeak } from "./leak.ts";
 import { copyEnv } from "./copy.ts";
 import { realBinary, shimsHealthy, writeShims } from "./shims.ts";
 import { deactivateLines, exportLines, initSnippet, shellLoaded, writeInit } from "./shell.ts";
-import { colorsEnabled, color, formatError, table, tildify } from "./render.ts";
+import { colorsEnabled, color, formatError, table, tildify, type Palette } from "./render.ts";
 import { VERSION } from "./version.ts";
 import {
   hooksList, isCategory, lsPlain, mcpDetail, mcpList, pluginDetail, pluginsList,
@@ -355,7 +356,30 @@ function doctorCommand(args: string[], out: Out): number {
         (fix ? "\n" : `    tread doctor ${only ? `${only} ` : ""}--fix\n`),
     );
   }
+  reportHomeLeak(out, c);
   return 0;
+}
+
+/**
+ * Name the real-home config that reaches the agents from this directory.
+ *
+ * The list is the whole warning: why it gets through depends on which walk
+ * the file is on, and that belongs in the README, not in front of someone
+ * who only needs to know what is bleeding in.
+ *
+ * Kept out of the problem tally and away from `--fix`: it is a property of
+ * where you happen to be standing, not of the environment, and nothing tread
+ * writes can repair it. Reported by `doctor` because that is where someone
+ * goes after noticing a skill they never installed.
+ */
+function reportHomeLeak(out: Out, c: Palette): void {
+  const leak = homeLeak();
+  if (!leak) return;
+  // against the real home, not $HOME: an agent shelling out to tread has had
+  // HOME moved, and the default would leave every path spelled out in full
+  const short = (p: string) => (p === leak.home ? "~" : tildify(p, leak.home));
+  const list = leak.surfaces.map((s) => short(path.join(leak.home, s))).join("  ");
+  out(`\n${c.yellow("⚠")}  leaking in from ~:  ${list}\n`);
 }
 
 function isBrokenLink(p: string): boolean {

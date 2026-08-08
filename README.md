@@ -56,6 +56,9 @@ claude 自己确实处处遵守 `CLAUDE_CONFIG_DIR`，但一个装 hook 的 skil
 所以三个 agent 的 shim **都**把 `HOME` 指向环境根。HOME 只对 agent 进程生效——在 shim 里
 设置，不污染你的 shell。
 
+移动 HOME 有个代价：claude 找 project 级配置时是拿 `$HOME` 当遍历终点的，HOME 一挪，真 home
+就不再是边界。见[已知限制](#已知限制)里的目录相关泄漏，`tread doctor` 会按你当前所在的目录报。
+
 环境目录做成 home 的形状，把真 home 里**被允许的部分** symlink 进来：
 
 ```
@@ -197,6 +200,30 @@ MCP 的 header 与 env **只显示 key，值一律打码**。
 - **cursor 会往新环境里自动下载你账号的默认插件。** 实测新建环境 32 秒后它自己拉了一份
   `dbt / github / redis-development / superpowers`——是独立副本不是泄漏，但新环境对 cursor
   而言不是全空的。要清掉用 `cursor-agent plugin` 自己处理。
+- **在真 home 底下、又不在 git 仓库里的目录启动 claude，真 home 的 `~/.claude` 会以 project
+  作用域漏进来。** claude 找 project 级 skill / agent / command 的办法是从 cwd 逐级往上收集
+  `<祖先>/.claude/…`，这个遍历只在 `.git` 或 `$HOME` 处停。shim 把 HOME 指向环境根之后，
+  真 home 不再是终点，遍历会一路爬过它——`/skills` 里能看到那些 skill 标着 `project` 而不是
+  `user`。**在 git 仓库里工作就没有这个问题**，仓库根会截断遍历。也可以把工作目录放到 home 外面。
+  （试过用一个临时的空 `.git` 当边界：确实能截断，但 claude 会因此把非仓库目录判成 git 仓库，
+  且 project 级写入会落到那个假仓库根，得不偿失，已放弃。）
+- **另一族在 home 底下的任何目录都会漏，`.git` 也挡不住，环境关不掉。** 它们走的是另一套
+  遍历：一直到 `/`、包含 `$HOME` 本身。跟 HOME 有没有被移动无关，改 shim 之前之后一样漏。
+
+  逐个实测过，会漏和不会漏的分别是：
+
+  | 位置 | 从祖先目录漏进来 | `.git` 能挡住 |
+  |---|---|---|
+  | `~/.claude/skills`、`agents`、`commands` | 是 | **是** |
+  | `~/.claude/CLAUDE.md`、`~/CLAUDE.md` | 是 | 否 |
+  | `~/.mcp.json` | 是（列进 `mcp list`，待批准） | 否 |
+  | `~/AGENTS.md`、`~/.cursor/rules` | 是，**cursor 读**（claude 不读 `AGENTS.md`） | 否 |
+  | `~/.claude/settings.json` | **否** | — |
+  | `~/.cursor/skills` | **否** | — |
+  | kimi 的全部（`~/.agents/skills` 等） | **否** | — |
+
+  `tread doctor` 按当前目录报，且只报**真的存在**的那些——`~/AGENTS.md`、`~/.mcp.json`
+  这类默认不存在，你不建就不会出现在警告里。
 - **只管理环境级（全局）内容。** project scope 的 skill / plugin / MCP / hook 不读也不显示——那是各 agent 自己的事。
 - **新建 kimi 环境会从真 home 播种 provider / model 配置**（剥掉 hooks）。kimi 把模型设置和凭证分开存，不播种的话环境根本起不来。
 - `tread use` 需要 shell 集成。脚本里用 `tread exec` 代替。

@@ -161,6 +161,14 @@ tread doctor <env> [--fix]  # the shared setup plus that one environment
 
 - **Something landed in the user's real home.** Check \`$TREAD_ENV\` first. If it
   is set, the installer used an absolute path instead of \`$HOME\`.
+- **A skill or agent nobody installed here shows up.** If \`/skills\` labels it
+  \`project\`, it came from the user's real home. claude's project walk stops at a
+  \`.git\` or at \`$HOME\`, and the shims move \`$HOME\` — so a working directory below
+  the real home with no repository in between reaches \`~/.claude\` and loads it as
+  project scope. Working inside a git repository, or outside the home, bounds it.
+  \`~/.claude/CLAUDE.md\` gets through either way: the memory walk ignores \`.git\`,
+  and no environment closes that one. \`tread doctor\` reports both for the
+  directory it is run in.
 - **\`tread use\` says the shell integration is not loaded.** A child process
   cannot change its parent's environment — \`tread init zsh --write\`.
 - **\`tread\` reports no environments.** You are on a tread older than ${VERSION};
