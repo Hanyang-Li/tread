@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AGENT_SPECS, AGENTS, type Agent } from "./agents.ts";
@@ -96,6 +97,25 @@ export function syncLockFile(envRoot: string): string {
 }
 
 /**
+ * Marks an environment as keeping its own login for one agent.
+ *
+ * Rendered from configuration by `ensureSkeleton`, not read as configuration
+ * itself: the shims are plain `/bin/sh` and consult this on every launch, so
+ * it has to be answerable by one `test -f` rather than a YAML parse.
+ *
+ * The polarity is deliberate. Absence means sharing, so environments created
+ * before this existed pick up the shared login without a migration, and the
+ * file only appears for the rarer case of a second account.
+ */
+export function isolateLoginFile(envRoot: string, a: Agent): string {
+  return path.join(envRoot, ".tread", `isolate-login-${a}`);
+}
+
+export function loginIsolated(envRoot: string, a: Agent): boolean {
+  return fs.existsSync(isolateLoginFile(envRoot, a));
+}
+
+/**
  * The variables `tread use` exports into the caller's shell.
  *
  * HOME is deliberately absent: cursor and kimi need it moved, but rewriting
@@ -106,7 +126,12 @@ export function activationEnv(envRoot: string): Record<string, string> {
   // carried so tread still knows the real home once a shim moves HOME
   const out: Record<string, string> = { TREAD_ENV_DIR: envRoot, TREAD_HOME: realHome() };
   for (const a of AGENTS) {
-    Object.assign(out, AGENT_SPECS[a].envVars(agentDir(envRoot, a)));
+    const dir = agentDir(envRoot, a);
+    Object.assign(out, AGENT_SPECS[a].envVars(dir));
+    // exported alongside the isolation variables for the same reason those
+    // are: an agent started by absolute path never runs its shim, and would
+    // otherwise be the one process that still demands its own login
+    Object.assign(out, AGENT_SPECS[a].loginVars(dir, loginIsolated(envRoot, a)));
   }
   return out;
 }

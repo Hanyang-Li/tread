@@ -175,6 +175,57 @@ describe("shims", () => {
   });
 });
 
+describe("shim 里的登录共享", () => {
+  // The distinction under test is not "which value" but "set vs unset": claude
+  // appends a hash of CLAUDE_CONFIG_DIR to its keychain service name unless
+  // CLAUDE_SECURESTORAGE_CONFIG_DIR is *defined and empty*. So the fake agent
+  // prints ${VAR-UNSET}, which is the only way to tell the two apart, and an
+  // empty export surviving a /bin/sh shim is the thing being proven.
+  const probe = '#!/bin/sh\necho "SECURE=[${CLAUDE_SECURESTORAGE_CONFIG_DIR-UNSET}]"\n';
+
+  async function run(envRoot: string): Promise<string> {
+    const fakeDir = path.join(tmp, "fakebin-login");
+    fs.mkdirSync(fakeDir, { recursive: true });
+    fs.writeFileSync(path.join(fakeDir, "claude"), probe, { mode: 0o755 });
+
+    const prev = process.env.PATH;
+    process.env.PATH = `${fakeDir}:${prev}`;
+    fs.rmSync(shimsDir(), { recursive: true, force: true });
+    writeShims();
+    process.env.PATH = prev;
+
+    const p = Bun.spawn([path.join(shimsDir(), "claude")], {
+      env: { ...process.env, TREAD_ENV_DIR: envRoot, PATH: `${fakeDir}:${prev}` },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = await new Response(p.stdout).text();
+    await p.exited;
+    return out;
+  }
+
+  test("默认共享：变量已定义且为空，keychain item 回到真实 home 那个", async () => {
+    const envRoot = path.join(tmp, "envs", "login-shared");
+    fs.mkdirSync(path.join(envRoot, ".tread"), { recursive: true });
+    expect(await run(envRoot)).toContain("SECURE=[]");
+  });
+
+  test("有 isolate 标记时变量指向本环境的 config dir", async () => {
+    const envRoot = path.join(tmp, "envs", "login-isolated");
+    fs.mkdirSync(path.join(envRoot, ".tread"), { recursive: true });
+    fs.writeFileSync(path.join(envRoot, ".tread", "isolate-login-claude"), "x");
+    expect(await run(envRoot)).toContain(`SECURE=[${envRoot}/.claude]`);
+  });
+
+  test("cursor 和 kimi 的 shim 不带这段：它们本来就共享", () => {
+    writeShims();
+    for (const n of ["cursor-agent", "kimi"]) {
+      const body = fs.readFileSync(path.join(shimsDir(), n), "utf8");
+      expect(body).not.toContain("isolate-login");
+    }
+  });
+});
+
 describe("shim 覆写", () => {
   test("覆写走替换而非截断：内容还原且始终可执行", () => {
     writeShims();

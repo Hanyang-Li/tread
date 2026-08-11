@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AGENTS, AGENT_SPECS } from "./agents.ts";
+import { AGENTS, AGENT_SPECS, isAgent, type Agent } from "./agents.ts";
 import { realHome } from "./paths.ts";
 
 /**
@@ -102,6 +102,16 @@ export interface ResolvedConfig {
   /** Home-relative paths to share, hard-denied entries already stripped. */
   allow: string[];
   /**
+   * Agents this environment keeps its own login for.
+   *
+   * Not a patch like `allow`, and not for the same reason: the allow list is
+   * an evolving default worth expressing intent against, while this is a
+   * closed set of three that a later layer should simply be able to answer
+   * outright. An env saying `login: {isolate: []}` means shared, not
+   * "inherit whatever is global".
+   */
+  isolateLogin: Agent[];
+  /**
    * The subset the user asked for by name.
    *
    * Worth separating because absence means opposite things on the two sides:
@@ -154,7 +164,58 @@ function cleanEntry(
   return parts.join("/");
 }
 
-function readLayer(file: string, problems: ConfigProblem[]): AllowPatch | null {
+/** One config file's contribution: an allow patch, plus a login answer if it gave one. */
+interface Layer {
+  allow: AllowPatch;
+  /** Absent means the file said nothing; `[]` means it said "share everything". */
+  isolateLogin?: Agent[];
+}
+
+/** Parse `login: {isolate: [...]}`, or record why it was ignored. */
+function readLogin(
+  raw: unknown,
+  file: string,
+  problems: ConfigProblem[],
+): Agent[] | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    problems.push({ file, message: "login must be a mapping with an isolate list" });
+    return undefined;
+  }
+  const out: Agent[] = [];
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (k !== "isolate") {
+      problems.push({ file, message: `unknown key "login.${k}"` });
+      continue;
+    }
+    if (!Array.isArray(v)) {
+      problems.push({ file, message: "login.isolate must be a list" });
+      continue;
+    }
+    for (const item of v) {
+      if (typeof item !== "string" || !isAgent(item)) {
+        problems.push({
+          file,
+          message: `login.isolate: not an agent: ${JSON.stringify(item)}`,
+        });
+        continue;
+      }
+      // naming an agent that shares its login by other means is a
+      // misunderstanding worth surfacing, not a silent no-op
+      if (Object.keys(AGENT_SPECS[item].loginVars("X", false)).length === 0) {
+        problems.push({
+          file,
+          message: `login.isolate: "${item}" has no per-environment login to isolate`,
+        });
+        continue;
+      }
+      if (!out.includes(item)) out.push(item);
+    }
+  }
+  return out;
+}
+
+function readLayer(file: string, problems: ConfigProblem[]): Layer | null {
   let text: string;
   try {
     text = fs.readFileSync(file, "utf8");
@@ -175,10 +236,13 @@ function readLayer(file: string, problems: ConfigProblem[]): AllowPatch | null {
   }
   const root = doc as Record<string, unknown>;
   for (const k of Object.keys(root)) {
-    if (k !== "allow") problems.push({ file, message: `unknown key "${k}"` });
+    if (k !== "allow" && k !== "login") {
+      problems.push({ file, message: `unknown key "${k}"` });
+    }
   }
+  const isolateLogin = readLogin(root.login, file, problems);
   const allow = root.allow;
-  if (allow === undefined) return {};
+  if (allow === undefined) return { allow: {}, isolateLogin };
   if (typeof allow !== "object" || allow === null || Array.isArray(allow)) {
     problems.push({
       file,
@@ -203,7 +267,7 @@ function readLayer(file: string, problems: ConfigProblem[]): AllowPatch | null {
     }
     patch[k as keyof AllowPatch] = cleaned;
   }
-  return patch;
+  return { allow: patch, isolateLogin };
 }
 
 /** Apply one layer. `replace` discards everything below it; otherwise extra then remove. */
@@ -233,13 +297,18 @@ export function resolveConfig(
   const asked = new Set<string>();
   let set = new Set(defaultAllow(platform));
 
+  let isolateLogin: Agent[] = [];
+
   for (const file of [globalConfigFile(), envConfigFile(envRoot)]) {
-    const patch = readLayer(file, problems);
-    if (patch === null) continue;
+    const layer = readLayer(file, problems);
+    if (layer === null) continue;
     files.push(file);
+    const patch = layer.allow;
     for (const p of patch.replace ?? patch.extra ?? []) asked.add(p);
     for (const p of patch.remove ?? []) asked.delete(p);
     set = applyLayer(set, patch);
+    // last layer to express an opinion wins outright — see ResolvedConfig
+    if (layer.isolateLogin !== undefined) isolateLogin = layer.isolateLogin;
   }
 
   // hard deny always wins, and saying so out loud beats failing silently
@@ -258,6 +327,7 @@ export function resolveConfig(
 
   return {
     allow: [...set].sort(),
+    isolateLogin,
     userAllow: [...asked].filter((p) => set.has(p)).sort(),
     problems,
     files,

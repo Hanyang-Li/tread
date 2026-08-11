@@ -59,6 +59,30 @@ function script(name: string, agent: Agent, real: string | null): string {
   for (const key of Object.keys(spec.envVars("X"))) {
     lines.push(`${key}="$TREAD_ENV_DIR/${spec.dir}"`, `export ${key}`);
   }
+
+  // Resolved here rather than baked in by `tread`: one shim serves every
+  // environment and finds out which one it is from $TREAD_ENV_DIR, so whether
+  // this environment shares the login can only be answered at launch. A `test
+  // -f` is the whole cost.
+  const dirRef = `$TREAD_ENV_DIR/${spec.dir}`;
+  const shared = spec.loginVars(dirRef, false);
+  const isolated = spec.loginVars(dirRef, true);
+  const loginKeys = Object.keys(shared);
+  if (loginKeys.length > 0) {
+    lines.push(
+      "",
+      "# this agent binds its stored login to its config dir, so each",
+      "# environment would otherwise need its own. sharing is the default;",
+      "# `tread` writes the marker file for an environment that opted out.",
+      `if [ -f "$TREAD_ENV_DIR/.tread/isolate-login-${agent}" ]; then`,
+      ...loginKeys.map((k) => `  ${k}="${isolated[k]}"`),
+      "else",
+      ...loginKeys.map((k) => `  ${k}="${shared[k]}"`),
+      "fi",
+      ...loginKeys.map((k) => `export ${k}`),
+    );
+  }
+
   lines.push("", 'exec "$real" "$@"', "");
   return lines.join("\n");
 }

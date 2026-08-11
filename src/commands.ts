@@ -10,6 +10,7 @@ import {
   syncLockFile,
 } from "./paths.ts";
 import { clearStale, staleLock } from "./lock.ts";
+import { loginIssues, sharedLogin } from "./login.ts";
 import { homeLeak } from "./leak.ts";
 import { copyEnv } from "./copy.ts";
 import { complete, completionState, writeCompletion } from "./completion.ts";
@@ -286,6 +287,21 @@ function doctorCommand(args: string[], out: Out): number {
     const note = AGENT_SPECS[agent].needsHome ? c.dim("HOME redirected") : "";
     rows.push([`  ${name}`, bin ? ok : c.red("missing"), bin ? `${tildify(bin)}  ${note}` : ""]);
   }
+
+  // reported once, not per environment: sharing is the default and the
+  // mechanism belongs to the agent. An environment that opted out is the
+  // exception and shows up in its own section below. Worth a row at all
+  // because the symptom of any of these breaking is identical — a `/login`
+  // prompt at the moment you switched environments — while the causes are
+  // three different things in three different places.
+  rows.push(["login", c.dim("shared"), c.dim("with every environment, unless login.isolate")]);
+  for (const r of sharedLogin()) {
+    rows.push([
+      `  ${r.agent}`,
+      r.present === null ? c.dim("n/a") : r.present ? ok : c.yellow("not logged in"),
+      r.mechanism,
+    ]);
+  }
   out(table(rows).join("\n") + "\n\n");
 
   // collected rather than printed as they are found: the status column can
@@ -334,6 +350,10 @@ function doctorCommand(args: string[], out: Out): number {
         }
       }
     }
+    // config decides this and doctor never rewrites config, so it is reported
+    // and never marked fixed — logging in is the user's move, not --fix's
+    for (const text of loginIssues(root)) found(text, false);
+
     const toml = path.join(agentDir(root, "kimi"), "config.toml");
     const want = skillsDir(root, "kimi");
     if (fs.existsSync(toml)) {

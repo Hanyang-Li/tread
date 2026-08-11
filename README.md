@@ -190,9 +190,31 @@ Refusals nest: `.config` is shared as a whole, but the `tread` subdirectory insi
 
 Links are **re-synced on every activation**. Each environment keeps its own manifest (`<env>/.tread/sync.json`), so removing an entry from the config really does detach the link — tightening the config without detaching is the worst way for an allow list to fail. Detaching only touches symlinks that point at your real home, plus empty directories; never `rm -r`. Real files created inside the environment always win.
 
-### Known limitations
+### Logins are shared, not per environment
 
-- **claude needs a separate `/login` per environment.** Its credentials live in the keychain and are bound to the config dir; there is nothing on disk to copy (verified: copying the whole config dir does not help). kimi's credentials are on disk, and tread symlinks them back to your real home when creating an environment, so no re-login there.
+You log in once, on your real home, and every environment is already logged in — `create` and `cp` alike. Each agent gets there differently, and only one of them needed tread to do anything about it:
+
+| agent | credential store | how it reaches an environment |
+|---|---|---|
+| cursor | keychain, fixed service name | sharing `Library/Keychains` is the whole mechanism |
+| kimi | files (`~/.kimi-code/credentials`, `oauth/`) | symlinked back on `create`; `config.toml` stays per environment |
+| claude | keychain, **service name includes a hash of `CLAUDE_CONFIG_DIR`** | needs `CLAUDE_SECURESTORAGE_CONFIG_DIR` defined and empty |
+
+claude is the odd one out. Its service name is built as `Claude Code-credentials` plus the first 8 hex of the config dir's sha256, so pointing `CLAUDE_CONFIG_DIR` at an environment silently names a *different* keychain item — which is why a fresh environment used to demand its own `/login`, and why copying the config dir never helped. Setting `CLAUDE_SECURESTORAGE_CONFIG_DIR` to the **empty string** drops the hash and the item becomes the one your real home already uses. Empty, not unset: those mean opposite things, and claude ships a special case so the empty value survives into subprocesses. The shims do this for you.
+
+To give one environment its own account instead:
+
+```yaml
+# <env>/.tread/config.yaml
+login:
+  isolate: [claude]
+```
+
+That environment goes back to its own keychain item and its own `/login`. `tread doctor` reports which item each environment resolves and whether it exists, so a claude release changing the construction shows up as a warning instead of as a surprise login prompt.
+
+Two things worth knowing. Every environment shares one account — that is the point, but it means `login: isolate` is the only way to run two. And the read-modify-write lock claude takes around credential refresh lives in each environment's own directory, so it does not span environments; running several at once while a token happens to be rotating can, rarely, cost you one re-login.
+
+### Known limitations
 
 - **The macOS login keychain must be shared (`Library/Keychains`).** The keychain is located via `$HOME`, so once HOME moves, `security default-keychain` fails outright with *a default keychain could not be found* — claude's and cursor's login state is all in there, and the symptom is being unable to log in at all, with a dialog about a missing keychain. Only `Library/Keychains` is shared; `Library` itself is a mirrored directory, so other apps' state stays isolated.
 

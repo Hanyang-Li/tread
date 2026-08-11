@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { AGENTS, AGENT_SPECS } from "./agents.ts";
 import {
-  agentDir, envDir, envsDir, lastUsedFile, realHome, skillsDir, stateFile, syncLockFile,
+  agentDir, envDir, envsDir, isolateLoginFile, lastUsedFile, realHome, skillsDir,
+  stateFile, syncLockFile,
 } from "./paths.ts";
 import { hardDeny, resolveConfig, type ConfigProblem } from "./config.ts";
 import { installTreadSkill } from "./skill.ts";
@@ -343,6 +344,31 @@ function seedKimiConfig(envRoot: string): void {
   fs.writeFileSync(target, kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n");
 }
 
+/**
+ * Render `login.isolate` into the marker files the shims read.
+ *
+ * Rendered on every activation, both directions: config is the source of
+ * truth, so an agent dropped from the list has to lose its marker too, or the
+ * environment would go on demanding its own login with nothing left saying so.
+ */
+function syncLoginMarkers(envRoot: string): void {
+  const isolated = new Set(resolveConfig(envRoot).isolateLogin);
+  for (const a of AGENTS) {
+    if (Object.keys(AGENT_SPECS[a].loginVars("X", false)).length === 0) continue;
+    const marker = isolateLoginFile(envRoot, a);
+    if (isolated.has(a)) {
+      if (!fs.existsSync(marker)) {
+        writeFileAtomic(
+          marker,
+          `# ${a} keeps its own login in this environment — set by login.isolate\n`,
+        );
+      }
+    } else {
+      fs.rmSync(marker, { force: true });
+    }
+  }
+}
+
 /** Create every agent's config dir plus the links a hijacked HOME needs. Idempotent. */
 export function ensureSkeleton(envRoot: string): SyncResult {
   // the whole body writes, not just the sync at the end: two shells activating
@@ -357,13 +383,16 @@ export function ensureSkeleton(envRoot: string): SyncResult {
     fs.mkdirSync(path.join(envRoot, ".tread"), { recursive: true });
 
     // kimi keeps credentials on disk, so a fresh env would demand a new login.
-    // Link them back to the real home. claude and cursor use the keychain.
+    // Link them back to the real home. claude and cursor use the keychain,
+    // which `Library/Keychains` shares — though claude needs one more variable
+    // on top of that, which is what `syncLoginMarkers` below governs.
     for (const n of ["credentials", "oauth"]) {
       const link = path.join(agentDir(envRoot, "kimi"), n);
       if (fs.existsSync(link) || isLink(link)) continue;
       fs.symlinkSync(path.join(realHome(), ".kimi-code", n), link);
     }
     seedKimiConfig(envRoot);
+    syncLoginMarkers(envRoot);
     // an agent in here has had its HOME moved out from under it; ship the
     // explanation next to the agent rather than hoping the user pastes it in
     installTreadSkill(envRoot);

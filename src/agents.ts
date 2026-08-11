@@ -11,6 +11,25 @@ export interface AgentSpec {
   /** isolation variables, given the absolute config dir */
   envVars(absDir: string): Record<string, string>;
   /**
+   * Variables deciding whether the agent's stored login is shared with the
+   * real home, given the absolute config dir and whether this environment
+   * opted out.
+   *
+   * Only claude needs any. Sharing `Library/Keychains` is already enough for
+   * cursor, whose keychain service name is a constant, and `ensureSkeleton`
+   * symlinks kimi's credential files back — so both share their login across
+   * environments without tread doing anything else. claude is the exception:
+   * it hashes CLAUDE_CONFIG_DIR into its own service name, so every
+   * environment resolves a different keychain item and has to log in again.
+   *
+   * The empty string is load-bearing. claude skips the hash only when
+   * CLAUDE_SECURESTORAGE_CONFIG_DIR is *defined and empty*, and it carries a
+   * special case through to subprocesses so that empty value survives — so
+   * unsetting the variable and setting it to "" mean opposite things, and
+   * nothing here may treat a falsy value as absent.
+   */
+  loginVars(absDir: string, isolated: boolean): Record<string, string>;
+  /**
    * Whether the agent must be launched with HOME pointed at the env root.
    *
    * True for all three, and for one shared reason: an agent's own config
@@ -53,6 +72,11 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     // exports it into the shell, so a claude started by absolute path —
     // bypassing the shim entirely — is still redirected.
     envVars: (d) => ({ CLAUDE_CONFIG_DIR: d }),
+    // isolated resolves to the config dir rather than leaving the variable
+    // unset: both give this environment its own keychain item, but a value
+    // survives switching from a sharing environment to this one, where an
+    // absent variable would leave the previous "" in the shell.
+    loginVars: (d, isolated) => ({ CLAUDE_SECURESTORAGE_CONFIG_DIR: isolated ? d : "" }),
     needsHome: true,
     isolate: () => [],
     volatile: [
@@ -65,6 +89,9 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     aliases: ["agent"],
     dir: ".cursor",
     envVars: (d) => ({ CURSOR_CONFIG_DIR: d, CURSOR_DATA_DIR: d }),
+    // nothing to set: cursor-agent stores its login in the keychain under a
+    // fixed service name, so sharing Library/Keychains already shares it
+    loginVars: () => ({}),
     needsHome: true,
     // cursor-agent also reads the desktop app's state DB, which caches the
     // skill and plugin index. Sharing it leaks every skill you ever had;
@@ -82,6 +109,9 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     aliases: [],
     dir: ".kimi-code",
     envVars: (d) => ({ KIMI_CODE_HOME: d }),
+    // nothing to set: kimi keeps credentials in files, which `ensureSkeleton`
+    // symlinks back to the real home
+    loginVars: () => ({}),
     needsHome: true,
     isolate: () => [],
     volatile: [

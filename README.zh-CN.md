@@ -190,9 +190,31 @@ allow:
 
 链接在**每次激活时重新同步**。环境自己记一份清单（`<env>/.tread/sync.json`），所以从配置里删掉一项会真的把链接摘掉——只收紧配置却不摘链接，是白名单最坏的失败方式。摘除只动指向真 home 的 symlink 和空目录，绝不 `rm -r`：环境里自己建的真实文件永远优先。
 
-### 已知限制
+### 登录态是共享的，不是每环境一份
 
-- **claude 每个环境要单独 `/login` 一次。** 它的凭证在 keychain 里且与 config dir 绑定，磁盘上没有可复制的东西（实测：全量复制 config dir 也无效）。kimi 的凭证在磁盘上，tread 建环境时 symlink 回真 home，不用重登。
+在真 home 上登录一次，所有环境就都是已登录状态，`create` 和 `cp` 都一样。三家走的路不同，只有一家需要 tread 额外做事：
+
+| agent | 凭证存哪 | 怎么到达环境 |
+|---|---|---|
+| cursor | keychain，service name 固定 | 共享 `Library/Keychains` 就是全部机制 |
+| kimi | 文件（`~/.kimi-code/credentials`、`oauth/`）| `create` 时 symlink 回真 home；`config.toml` 仍然每环境独立 |
+| claude | keychain，**service name 里掺了 `CLAUDE_CONFIG_DIR` 的哈希** | 需要把 `CLAUDE_SECURESTORAGE_CONFIG_DIR` 定义为空 |
+
+claude 是唯一的例外。它的 service name 是 `Claude Code-credentials` 加上 config dir 的 sha256 前 8 位，所以把 `CLAUDE_CONFIG_DIR` 指向环境，等于悄悄指向了**另一个** keychain item —— 这就是新环境以前非要自己 `/login` 一次的原因，也是为什么复制 config dir 从来没用。把 `CLAUDE_SECURESTORAGE_CONFIG_DIR` 设成**空字符串**就会去掉那段哈希，item 变回真 home 已经在用的那个。必须是空字符串而不是不设，两者含义相反；claude 自己还专门写了一处特判，保证这个空值能传进子进程。shim 已经替你做了。
+
+想让某个环境挂另一个账号：
+
+```yaml
+# <env>/.tread/config.yaml
+login:
+  isolate: [claude]
+```
+
+该环境会回到自己的 keychain item、自己的 `/login`。`tread doctor` 会报出每个环境解析到哪个 item、item 在不在，所以 claude 哪天改了构造方式，你看到的是一条告警而不是某天突然要重新登录。
+
+两点要知道。所有环境共用一个账号 —— 这正是目的，但也意味着 `login: isolate` 是同时用两个账号的唯一办法。另外 claude 在刷新凭证时用的读-改-写锁放在各环境自己的目录下，跨环境不互斥；多个环境同时跑、又恰好碰上 token 轮转时，小概率会让你多登一次。
+
+### 已知限制
 
 - **macOS 的 login keychain 必须共享（`Library/Keychains`）。** keychain 是按 `$HOME` 找的，HOME 一移动，`security default-keychain` 直接报 *a default keychain could not be found* —— claude 和 cursor 的登录态全在里面，表现就是死活登不上、弹窗说找不到钥匙串。只共享 `Library/Keychains` 这一条，`Library` 本身改用镜像目录，其余 app 状态照旧隔离。
 
