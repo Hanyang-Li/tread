@@ -202,6 +202,8 @@ allow:
 
 claude 是唯一的例外。它的 service name 是 `Claude Code-credentials` 加上 config dir 的 sha256 前 8 位，所以把 `CLAUDE_CONFIG_DIR` 指向环境，等于悄悄指向了**另一个** keychain item —— 这就是新环境以前非要自己 `/login` 一次的原因，也是为什么复制 config dir 从来没用。把 `CLAUDE_SECURESTORAGE_CONFIG_DIR` 设成**空字符串**就会去掉那段哈希，item 变回真 home 已经在用的那个。必须是空字符串而不是不设，两者含义相反；claude 自己还专门写了一处特判，保证这个空值能传进子进程。shim 已经替你做了。
 
+共享 keychain item 是必要条件但不充分，所以 tread 还多做一件事：新环境的 `.claude.json` 里会被种上 `hasCompletedOnboarding: true`。claude 只要发现这个键不为 true 就跑首次配置向导，而向导里那一步是**无条件**问你选哪种登录方式的——它压根不查 keychain。不种这个键，新环境明明已经拿到有效 token，还是会弹出 OAuth 流程。只有交互式启动会碰到；`claude -p` 完全跳过向导。
+
 想让某个环境挂另一个账号：
 
 ```yaml

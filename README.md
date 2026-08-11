@@ -202,6 +202,8 @@ You log in once, on your real home, and every environment is already logged in �
 
 claude is the odd one out. Its service name is built as `Claude Code-credentials` plus the first 8 hex of the config dir's sha256, so pointing `CLAUDE_CONFIG_DIR` at an environment silently names a *different* keychain item — which is why a fresh environment used to demand its own `/login`, and why copying the config dir never helped. Setting `CLAUDE_SECURESTORAGE_CONFIG_DIR` to the **empty string** drops the hash and the item becomes the one your real home already uses. Empty, not unset: those mean opposite things, and claude ships a special case so the empty value survives into subprocesses. The shims do this for you.
 
+Sharing the item is necessary but not sufficient, so tread does one more thing: a new environment is seeded with `hasCompletedOnboarding: true` in its `.claude.json`. claude runs its first-run wizard whenever that key is not true, and the wizard asks which login method you want **unconditionally** — it never consults the keychain. Without the seed a fresh environment opens an OAuth flow while already holding a valid token. Only interactive runs hit this; `claude -p` skips the wizard entirely.
+
 To give one environment its own account instead:
 
 ```yaml

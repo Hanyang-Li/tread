@@ -70,6 +70,33 @@ describe("login.isolate 解析", () => {
   });
 });
 
+describe("claude onboarding 种子", () => {
+  const cfg = (dir: string) => path.join(dir, ".claude", ".claude.json");
+
+  test("新环境直接标成已 onboard：否则向导会无条件问登录方式", () => {
+    // sharing the keychain item is not enough — the wizard never consults it,
+    // so without this a fresh env opens an OAuth flow despite holding a valid
+    // token. `claude -p` skips the wizard, which is why this hid for a while.
+    const dir = createEnv("onboard");
+    expect(JSON.parse(fs.readFileSync(cfg(dir), "utf8")).hasCompletedOnboarding).toBe(true);
+  });
+
+  test("已有配置只补这个键，claude 自己的状态一个不动", () => {
+    const dir = createEnv("onboard-existing");
+    fs.writeFileSync(cfg(dir), JSON.stringify({ userID: "u", numStartups: 7 }));
+    ensureSkeleton(dir);
+    const d = JSON.parse(fs.readFileSync(cfg(dir), "utf8"));
+    expect(d).toEqual({ userID: "u", numStartups: 7, hasCompletedOnboarding: true });
+  });
+
+  test("坏掉的 JSON 不碰：claude 会从自己的缓存修，重建等于丢掉账号", () => {
+    const dir = createEnv("onboard-broken");
+    fs.writeFileSync(cfg(dir), "{ not json");
+    ensureSkeleton(dir);
+    expect(fs.readFileSync(cfg(dir), "utf8")).toBe("{ not json");
+  });
+});
+
 describe("标记文件跟着配置走", () => {
   test("配置里加了就落盘，去掉了就清掉", () => {
     const dir = createEnv("markers");

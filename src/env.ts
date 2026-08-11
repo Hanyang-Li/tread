@@ -345,6 +345,42 @@ function seedKimiConfig(envRoot: string): void {
 }
 
 /**
+ * Mark onboarding as done, so a shared login is actually usable.
+ *
+ * Sharing the keychain item is not enough on its own. claude runs its
+ * first-run wizard whenever `hasCompletedOnboarding` is not true, and that
+ * wizard asks which login method you want *unconditionally* — it never looks
+ * at the keychain. So a fresh environment that already resolves a valid token
+ * would still open an OAuth flow, which is the exact thing sharing the
+ * credential was meant to prevent. Only interactive runs hit this; `claude -p`
+ * skips the wizard, which is what made it easy to miss.
+ *
+ * Anthropic's own plugin-eval fixture seeds this same key for the same reason,
+ * so it is the supported way to say "not a first run".
+ *
+ * Adds the key and nothing else. This file is claude's own state — after one
+ * run it holds the account, the machine id and every counter claude keeps —
+ * so an unparseable one is left alone rather than replaced: claude repairs it
+ * from its own cache, and a fresh object here would throw that away.
+ */
+function seedClaudeOnboarded(envRoot: string): void {
+  const file = path.join(agentDir(envRoot, "claude"), ".claude.json");
+  let doc: Record<string, unknown> = {};
+  if (fs.existsSync(file)) {
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+      doc = parsed as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    if (doc.hasCompletedOnboarding === true) return;
+  }
+  doc.hasCompletedOnboarding = true;
+  writeFileAtomic(file, JSON.stringify(doc, null, 2) + "\n");
+}
+
+/**
  * Render `login.isolate` into the marker files the shims read.
  *
  * Rendered on every activation, both directions: config is the source of
@@ -392,6 +428,7 @@ export function ensureSkeleton(envRoot: string): SyncResult {
       fs.symlinkSync(path.join(realHome(), ".kimi-code", n), link);
     }
     seedKimiConfig(envRoot);
+    seedClaudeOnboarded(envRoot);
     syncLoginMarkers(envRoot);
     // an agent in here has had its HOME moved out from under it; ship the
     // explanation next to the agent rather than hoping the user pastes it in
