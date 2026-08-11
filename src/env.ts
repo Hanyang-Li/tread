@@ -485,15 +485,19 @@ export function resolveEnv(name?: string): string {
 }
 
 export function removeEnv(name: string): void {
-  // the timestamp lives inside the environment, so it goes with it
+  // the current timestamp lives inside the environment, so it goes with it —
+  // but the pre-per-environment global file has to be told, or a new
+  // environment reusing the name inherits the deleted one's history
   fs.rmSync(requireEnv(name), { recursive: true, force: true });
+  forgetLegacyLastUsed(name);
 }
 
 /**
  * The pre-per-environment global state file.
  *
- * Read and never written. Entries fade out on their own: an environment that
- * gets activated writes its own timestamp, which wins from then on.
+ * Read, and written only to forget a name. Entries otherwise fade out on
+ * their own: an environment that gets activated writes its own timestamp,
+ * which wins from then on.
  */
 function readLegacyLastUsed(): Record<string, string> {
   try {
@@ -506,6 +510,45 @@ function readLegacyLastUsed(): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+/**
+ * Drop one name from the legacy file, and drop the file once it is empty.
+ *
+ * Deleting an environment has to reach in here because the fade-out this file
+ * relies on never happens for a name that is gone: `lastUsed` falls back to
+ * the legacy entry whenever an environment has no timestamp of its own, and a
+ * newly created environment has none until it is first activated. So without
+ * this, `create` after `rm` shows the deleted environment's history — which is
+ * both wrong and the opposite of what deleting is supposed to mean.
+ *
+ * Rewrites what it just read, so two concurrent `rm`s could in principle lose
+ * one removal. Not worth a lock: the loss is one stale entry in a file that is
+ * on its way out, and it is corrected by the next `rm` of that name.
+ */
+function forgetLegacyLastUsed(name: string): void {
+  const file = stateFile();
+  let doc: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+    doc = parsed as Record<string, unknown>;
+  } catch {
+    return; // absent or unreadable: nothing to forget
+  }
+  const map = doc.lastUsed;
+  if (typeof map !== "object" || map === null || Array.isArray(map)) return;
+  const entries = map as Record<string, unknown>;
+  if (!(name in entries)) return;
+  delete entries[name];
+
+  // a file whose only content was this entry has nothing left to say, and
+  // leaving `{"lastUsed":{}}` behind would keep the legacy path alive forever
+  if (Object.keys(entries).length === 0 && Object.keys(doc).length === 1) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
+  writeFileAtomic(file, JSON.stringify(doc, null, 2) + "\n");
 }
 
 function readLastUsed(envRoot: string): string | null {

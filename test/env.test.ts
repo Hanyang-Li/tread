@@ -443,6 +443,43 @@ describe("lastUsed", () => {
     );
   });
 
+  test("删掉 env 会连老 state.json 里的记录一起忘掉", () => {
+    // the reported bug: rm then create with the same name showed the deleted
+    // environment's "3 days ago". A new env has no timestamp of its own until
+    // it is first activated, so lastUsed fell back to the legacy entry — the
+    // fade-out that file relies on never happens for a name that is gone.
+    const sf = path.join(process.env.TREAD_STATE_DIR!, "state.json");
+    createEnv("lu-reborn");
+    fs.mkdirSync(path.dirname(sf), { recursive: true });
+    fs.writeFileSync(
+      sf,
+      JSON.stringify({ lastUsed: { "lu-reborn": "2020-01-01T00:00:00.000Z", keep: "x" } }),
+    );
+    removeEnv("lu-reborn");
+    createEnv("lu-reborn");
+    expect(lastUsed()["lu-reborn"]).toBeUndefined();
+    // other environments' entries survive
+    expect(JSON.parse(fs.readFileSync(sf, "utf8")).lastUsed.keep).toBe("x");
+    removeEnv("lu-reborn");
+  });
+
+  test("最后一条记录被忘掉后，老文件本身也删掉", () => {
+    const sf = path.join(process.env.TREAD_STATE_DIR!, "state.json");
+    createEnv("lu-last");
+    fs.writeFileSync(sf, JSON.stringify({ lastUsed: { "lu-last": "2020-01-01T00:00:00.000Z" } }));
+    removeEnv("lu-last");
+    expect(fs.existsSync(sf)).toBe(false);
+  });
+
+  test("老文件坏掉时删除 env 不炸", () => {
+    const sf = path.join(process.env.TREAD_STATE_DIR!, "state.json");
+    createEnv("lu-badstate");
+    fs.writeFileSync(sf, "{ not json");
+    expect(() => removeEnv("lu-badstate")).not.toThrow();
+    expect(fs.readFileSync(sf, "utf8")).toBe("{ not json");
+    fs.rmSync(sf, { force: true });
+  });
+
   test("坏掉的 last-used 只是让那个 env 没有时间戳，不炸", () => {
     createEnv("lu-bad");
     fs.writeFileSync(lastUsedFile(envDir("lu-bad")), "");
