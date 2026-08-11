@@ -248,7 +248,13 @@ describe("e2e", () => {
     let home: string;
     let cfg: string;
 
-    const write = () => tread(["init", "starship", "--write"], { HOME: home });
+    // TREAD_HOME as well as HOME: rcFile() routes through realHome(), which
+    // prefers TREAD_HOME so that an agent shelling out to tread cannot
+    // misdirect --write into the environment its shim moved HOME to. Inherit
+    // that from a test runner started inside an environment and this writes
+    // the user's actual starship.toml instead of the fixture.
+    const write = () =>
+      tread(["init", "starship", "--write"], { HOME: home, TREAD_HOME: home });
     const read = () => fs.readFileSync(cfg, "utf8");
 
     beforeEach(() => {

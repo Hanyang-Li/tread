@@ -4,12 +4,61 @@ import os from "node:os";
 import path from "node:path";
 
 let tmp: string;
+let fakeHome: string;
+let prevTreadHome: string | undefined;
+
+/**
+ * The home these tests link *from*.
+ *
+ * A fixture rather than the real one, for two reasons. It stops the assertions
+ * depending on which dotfiles the machine happens to have — most of them used
+ * to be `if (!exists) continue`, which passes vacuously on a bare machine and
+ * asserts nothing. And it stops the probe files these tests write from landing
+ * in a real home.
+ *
+ * It has to be installed as TREAD_HOME, not HOME, because `realHome()` prefers
+ * TREAD_HOME — which is also why these tests failed when the runner itself was
+ * started inside a tread environment: `os.homedir()` answered with the env root
+ * while the code under test answered with the user's actual home, and the two
+ * disagreed about what "the real home" even meant.
+ */
+function home(): string {
+  return fakeHome;
+}
+
 beforeAll(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tread-env-"));
   process.env.TREAD_STATE_DIR = path.join(tmp, "state");
   delete process.env.TREAD_ENV;
+
+  fakeHome = path.join(tmp, "home");
+  prevTreadHome = process.env.TREAD_HOME;
+  process.env.TREAD_HOME = fakeHome;
+  for (const rel of [".gitconfig", ".npmrc", ".zshrc"]) {
+    fs.mkdirSync(fakeHome, { recursive: true });
+    fs.writeFileSync(path.join(fakeHome, rel), `# ${rel}\n`);
+  }
+  for (const rel of [".ssh", ".config/gh", "Library/Keychains", ".local/bin", ".kimi-code/oauth"]) {
+    fs.mkdirSync(path.join(fakeHome, rel), { recursive: true });
+  }
+  // tread refuses to share its own config dir; the fixture has one so the
+  // nested-denial test has something real to carve out
+  fs.mkdirSync(path.join(fakeHome, ".config/tread"), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, ".kimi-code/credentials"), "{}\n");
+  // hooks are stripped by the seed, default_model is carried over
+  fs.writeFileSync(
+    path.join(fakeHome, ".kimi-code/config.toml"),
+    'default_model = "kimi-k2"\n\n[[hooks]]\ncommand = "echo hi"\n',
+  );
 });
-afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+afterAll(() => {
+  // bun runs the test files in one process, so a TREAD_HOME left behind here
+  // redirects realHome() for every file that runs after this one — at a path
+  // that is about to be deleted
+  if (prevTreadHome === undefined) delete process.env.TREAD_HOME;
+  else process.env.TREAD_HOME = prevTreadHome;
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
 
 const {
   createEnv, ensureSkeleton, listEnvs, removeEnv, requireEnv, resolveEnv,
@@ -45,7 +94,7 @@ describe("env lifecycle", () => {
   });
 
   test("kimi config 从真 home 播种 provider/model，但剥掉 hooks", () => {
-    const real = path.join(os.homedir(), ".kimi-code/config.toml");
+    const real = path.join(home(), ".kimi-code/config.toml");
     if (!fs.existsSync(real)) return;
     const seeded = fs.readFileSync(path.join(envDir("work"), ".kimi-code/config.toml"), "utf8");
     expect(seeded).not.toContain("[[hooks]]");
@@ -57,10 +106,10 @@ describe("env lifecycle", () => {
   test("默认共享真 home：常见配置都在，且是 symlink 不是拷贝", () => {
     const dir = envDir("work");
     for (const rel of [".gitconfig", ".ssh", ".npmrc", ".zshrc"]) {
-      if (!fs.existsSync(path.join(os.homedir(), rel))) continue;
+      if (!fs.existsSync(path.join(home(), rel))) continue;
       const link = path.join(dir, rel);
       expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
-      expect(fs.readlinkSync(link)).toBe(path.join(os.homedir(), rel));
+      expect(fs.readlinkSync(link)).toBe(path.join(home(), rel));
     }
   });
 
@@ -75,12 +124,12 @@ describe("env lifecycle", () => {
 
   test("嵌套拒绝：.config 整体共享，但 tread 自己的配置不进环境", () => {
     const dir = envDir("work");
-    if (!fs.existsSync(path.join(os.homedir(), ".config"))) return;
+    if (!fs.existsSync(path.join(home(), ".config"))) return;
     // .config is mirrored, not linked, so the denied child can be left out
     expect(fs.lstatSync(path.join(dir, ".config")).isSymbolicLink()).toBe(false);
     expect(fs.existsSync(path.join(dir, ".config/tread"))).toBe(false);
     // siblings of the denied path are still links, not copies
-    for (const name of fs.readdirSync(path.join(os.homedir(), ".config"))) {
+    for (const name of fs.readdirSync(path.join(home(), ".config"))) {
       if (name === "tread") continue;
       const p = path.join(dir, ".config", name);
       if (fs.existsSync(p)) expect(fs.lstatSync(p).isSymbolicLink()).toBe(true);
@@ -103,12 +152,12 @@ describe("env lifecycle", () => {
     expect(defaultAllow("linux")).not.toContain("Library/Keychains");
     if (process.platform !== "darwin") return;
     const dir = envDir("work");
-    if (!fs.existsSync(path.join(os.homedir(), "Library/Keychains"))) return;
+    if (!fs.existsSync(path.join(home(), "Library/Keychains"))) return;
     // Library itself is mirrored so only Keychains crosses over — the rest is
     // app state, which is what the environment exists to keep apart
     expect(fs.lstatSync(path.join(dir, "Library")).isSymbolicLink()).toBe(false);
     expect(fs.readlinkSync(path.join(dir, "Library/Keychains")))
-      .toBe(path.join(os.homedir(), "Library/Keychains"));
+      .toBe(path.join(home(), "Library/Keychains"));
     expect(fs.existsSync(path.join(dir, "Library/Application Support"))).toBe(false);
   });
 
@@ -126,7 +175,7 @@ describe("env lifecycle", () => {
   test("白名单：home 里没被允许的东西不进环境", () => {
     const dir = envDir("work");
     const probe = `.tread-unlisted-${process.pid}`;
-    fs.writeFileSync(path.join(os.homedir(), probe), "x");
+    fs.writeFileSync(path.join(home(), probe), "x");
     try {
       syncHomeLinks(dir);
       // this is what makes a skill's own state directory isolated for free:
@@ -134,14 +183,14 @@ describe("env lifecycle", () => {
       expect(fs.existsSync(path.join(dir, probe))).toBe(false);
       expect(defaultAllow("darwin")).not.toContain(probe);
     } finally {
-      fs.rmSync(path.join(os.homedir(), probe), { force: true });
+      fs.rmSync(path.join(home(), probe), { force: true });
     }
   });
 
   test("配置分层：extra 加进来，remove 拿掉，且 remove 在层内优先", () => {
     const dir = envDir("work");
     const probe = `.tread-extra-${process.pid}`;
-    fs.writeFileSync(path.join(os.homedir(), probe), "x");
+    fs.writeFileSync(path.join(home(), probe), "x");
     try {
       withEnvConfig(dir, `allow:\n  extra: [${probe}]\n`);
       expect(fs.lstatSync(path.join(dir, probe)).isSymbolicLink()).toBe(true);
@@ -155,7 +204,7 @@ describe("env lifecycle", () => {
       withEnvConfig(dir, `allow:\n  extra: [${probe}]\n  remove: [${probe}]\n`);
       expect(fs.existsSync(path.join(dir, probe))).toBe(false);
     } finally {
-      fs.rmSync(path.join(os.homedir(), probe), { force: true });
+      fs.rmSync(path.join(home(), probe), { force: true });
       fs.rmSync(envConfigFile(dir), { force: true });
       syncHomeLinks(dir);
     }
@@ -185,7 +234,7 @@ describe("env lifecycle", () => {
       const r = syncHomeLinks(dir);
       expect(r.problems.length).toBeGreaterThanOrEqual(3);
       expect(fs.existsSync(path.join(dir, ".gitconfig"))
-        || !fs.existsSync(path.join(os.homedir(), ".gitconfig"))).toBe(true);
+        || !fs.existsSync(path.join(home(), ".gitconfig"))).toBe(true);
     } finally {
       fs.rmSync(envConfigFile(dir), { force: true });
       syncHomeLinks(dir);
@@ -199,12 +248,12 @@ describe("env lifecycle", () => {
     fs.rmSync(path.join(dir, ".tread/sync.json"), { force: true });
     fs.mkdirSync(path.join(dir, "Legacy/Nested"), { recursive: true });
     const stray = path.join(dir, "Legacy", "gitconfig");
-    fs.symlinkSync(path.join(os.homedir(), ".gitconfig"), stray);
+    fs.symlinkSync(path.join(home(), ".gitconfig"), stray);
 
     syncHomeLinks(dir);
     expect(fs.existsSync(path.join(dir, "Legacy"))).toBe(false);
     // and the ones it still wants survive
-    if (fs.existsSync(path.join(os.homedir(), ".zshrc"))) {
+    if (fs.existsSync(path.join(home(), ".zshrc"))) {
       expect(fs.lstatSync(path.join(dir, ".zshrc")).isSymbolicLink()).toBe(true);
     }
     removeEnv("legacy");
@@ -226,7 +275,7 @@ describe("env lifecycle", () => {
   test("dryRun 只报告不落盘", () => {
     const dir = envDir("work");
     const probe = `.tread-dry-${process.pid}`;
-    fs.writeFileSync(path.join(os.homedir(), probe), "x");
+    fs.writeFileSync(path.join(home(), probe), "x");
     try {
       const f = envConfigFile(dir);
       fs.mkdirSync(path.dirname(f), { recursive: true });
@@ -235,7 +284,7 @@ describe("env lifecycle", () => {
       expect(r.added).toContain(probe);
       expect(fs.existsSync(path.join(dir, probe))).toBe(false);
     } finally {
-      fs.rmSync(path.join(os.homedir(), probe), { force: true });
+      fs.rmSync(path.join(home(), probe), { force: true });
       fs.rmSync(envConfigFile(dir), { force: true });
       syncHomeLinks(dir);
     }
@@ -245,7 +294,7 @@ describe("env lifecycle", () => {
     const dir = envDir("work");
     expect(fs.lstatSync(path.join(dir, ".local")).isSymbolicLink()).toBe(false);
     expect(fs.existsSync(path.join(dir, ".local/state/tread"))).toBe(false);
-    if (fs.existsSync(path.join(os.homedir(), ".local/bin"))) {
+    if (fs.existsSync(path.join(home(), ".local/bin"))) {
       expect(fs.lstatSync(path.join(dir, ".local/bin")).isSymbolicLink()).toBe(true);
     }
   });
@@ -253,7 +302,7 @@ describe("env lifecycle", () => {
   test("重新同步能接上后来才出现的配置，消失后又清掉", () => {
     const dir = envDir("work");
     const probe = `.tread-probe-${process.pid}`;
-    const real = path.join(os.homedir(), probe);
+    const real = path.join(home(), probe);
     try {
       const f = envConfigFile(dir);
       fs.mkdirSync(path.dirname(f), { recursive: true });
@@ -281,7 +330,7 @@ describe("env lifecycle", () => {
   test("环境里的真实文件不会被链接覆盖", () => {
     const dir = envDir("work");
     const probe = `.tread-own-${process.pid}`;
-    fs.writeFileSync(path.join(os.homedir(), probe), "home");
+    fs.writeFileSync(path.join(home(), probe), "home");
     fs.writeFileSync(path.join(dir, probe), "mine");
     try {
       const f = envConfigFile(dir);
@@ -291,7 +340,7 @@ describe("env lifecycle", () => {
       expect(fs.lstatSync(path.join(dir, probe)).isSymbolicLink()).toBe(false);
       expect(fs.readFileSync(path.join(dir, probe), "utf8")).toBe("mine");
     } finally {
-      fs.rmSync(path.join(os.homedir(), probe), { force: true });
+      fs.rmSync(path.join(home(), probe), { force: true });
       fs.rmSync(path.join(dir, probe), { force: true });
       fs.rmSync(envConfigFile(dir), { force: true });
       syncHomeLinks(dir);
@@ -303,7 +352,7 @@ describe("env lifecycle", () => {
     for (const n of ["credentials", "oauth"]) {
       const p = path.join(dir, ".kimi-code", n);
       expect(fs.lstatSync(p).isSymbolicLink()).toBe(true);
-      expect(fs.readlinkSync(p)).toBe(path.join(os.homedir(), ".kimi-code", n));
+      expect(fs.readlinkSync(p)).toBe(path.join(home(), ".kimi-code", n));
     }
   });
 
