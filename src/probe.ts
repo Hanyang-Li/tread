@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { rawHeaders } from "./inspect/mcp.ts";
 import type { McpServerInfo } from "./inspect/types.ts";
+import { VERSION } from "./version.ts";
 
 export type ProbeResult =
   | { state: "ok"; tools: string[]; latencyMs: number }
@@ -52,7 +53,7 @@ const INIT = {
   params: {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "tread", version: "0.2.0" },
+    clientInfo: { name: "tread", version: VERSION },
   },
 };
 const LIST = { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} };
