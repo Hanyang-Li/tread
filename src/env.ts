@@ -142,6 +142,22 @@ function readManifest(envRoot: string): string[] | null {
   }
 }
 
+/**
+ * The home-relative paths this environment shares with the real home.
+ *
+ * For callers that need to know where a write *inside* the environment could
+ * have reached the real home: every one of these is a link back out, so
+ * anything an agent wrote through one landed on the user's own files.
+ *
+ * Falls back to the configuration when there is no manifest yet. An
+ * environment created before the manifest existed still shares everything the
+ * config says, and answering "nothing" for it would silently narrow whatever
+ * check is built on this to the environments tread happens to have synced.
+ */
+export function sharedPaths(envRoot: string): string[] {
+  return readManifest(envRoot) ?? resolveConfig(envRoot).allow;
+}
+
 function writeManifest(envRoot: string, paths: string[]): void {
   // atomic even though the lock already serialises writers: a crash halfway
   // through would otherwise leave JSON that only `discoverExisting` can undo

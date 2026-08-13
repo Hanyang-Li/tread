@@ -4,14 +4,35 @@ import os from "node:os";
 import path from "node:path";
 
 let tmp: string;
+let home: string;
+let prevTreadHome: string | undefined;
 beforeAll(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tread-cmd-"));
   process.env.TREAD_STATE_DIR = path.join(tmp, "state");
   process.env.TREAD_DATA_DIR = path.join(tmp, "share");
+  // a fixture home, because `doctor` and `rm` now walk the real home looking
+  // for links into an environment — and one of these tests plants exactly
+  // such a link, which is not something to do in the user's own `~/.local/bin`
+  home = path.join(tmp, "home");
+  prevTreadHome = process.env.TREAD_HOME;
+  process.env.TREAD_HOME = home;
+  for (const rel of [".local/bin", ".local/share"]) {
+    fs.mkdirSync(path.join(home, rel), { recursive: true });
+  }
+  // the skeleton links these back to the real home, so a fixture without them
+  // would make every environment report two broken symlinks
+  fs.mkdirSync(path.join(home, ".kimi-code"), { recursive: true });
+  for (const rel of ["credentials", "oauth"]) {
+    fs.writeFileSync(path.join(home, ".kimi-code", rel), "{}\n");
+  }
   delete process.env.TREAD_ENV;
   delete process.env.TREAD_SHELL;
 });
-afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+afterAll(() => {
+  if (prevTreadHome === undefined) delete process.env.TREAD_HOME;
+  else process.env.TREAD_HOME = prevTreadHome;
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
 
 const { runCommand, HELP } = await import("../src/commands.ts");
 const { COMMANDS, renderCandidate, writeCompletion } = await import("../src/completion.ts");
@@ -221,6 +242,69 @@ describe("commands", () => {
     expect(fixed.out).toContain("(fixed)");
     // repaired, so the run after it has nothing left to say
     expect((await run(["doctor", "other"])).out).toMatch(/^other\s+ok$/m);
+  });
+
+  /**
+   * What claude's updater leaves in the real home when it runs inside an
+   * environment: a launcher whose target names the environment. The binary it
+   * downloaded is in the real home already — it got there through the shared
+   * `.local/share` link — so only the launcher needs repointing.
+   */
+  function plantStrayLauncher(env: string, version: string, as = "claude"): string {
+    const rel = `.local/share/claude/versions/${version}`;
+    fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true });
+    fs.writeFileSync(path.join(home, rel), "binary");
+    const launcher = path.join(home, ".local/bin", as);
+    fs.rmSync(launcher, { force: true });
+    fs.symlinkSync(path.join(tmp, "state/envs", env, rel), launcher);
+    return launcher;
+  }
+
+  test("doctor 报告指向环境的软链，--fix 把它修回真 home", async () => {
+    const launcher = plantStrayLauncher("other", "9.9.9");
+
+    const { out } = await run(["doctor"]);
+    expect(out).toContain("home links");
+    expect(out).toContain(".local/bin/claude");
+    expect(out).toContain("crossed");
+    // reporting only: a plain doctor never writes
+    expect(fs.readlinkSync(launcher)).toContain("envs/other");
+
+    const fixed = await run(["doctor", "--fix"]);
+    expect(fixed.out).toContain("repaired");
+    expect(fs.readlinkSync(launcher)).toBe(path.join(home, ".local/share/claude/versions/9.9.9"));
+    expect((await run(["doctor"])).out).toContain("nothing points into an environment");
+  });
+
+  test("rm 先修好指向环境的软链，删完命令还在", async () => {
+    await run(["create", "victim"]);
+    const launcher = plantStrayLauncher("victim", "8.8.8", "claude-victim");
+    // the launcher resolves right now, which is why nothing looks wrong until
+    // the environment goes away
+    expect(fs.existsSync(launcher)).toBe(true);
+
+    const { code, out } = await run(["rm", "victim", "--force"]);
+    expect(code).toBe(0);
+    expect(out).toContain("repaired");
+    expect(out).toContain("removed  victim");
+    // the whole point: deleting the environment used to take this with it
+    expect(fs.existsSync(launcher)).toBe(true);
+    expect(fs.readlinkSync(launcher)).toBe(path.join(home, ".local/share/claude/versions/8.8.8"));
+    fs.rmSync(launcher, { force: true });
+  });
+
+  test("_export use 顺带修掉上一次会话留下的越界软链，且不污染 stdout", async () => {
+    const launcher = plantStrayLauncher("other", "7.7.7");
+    let out = "";
+    let err = "";
+    await runCommand(["_export", "use", "work"], (s) => (out += s), (s) => (err += s));
+    // stdout is eval'd by the shell function, so the repair may only be
+    // mentioned on stderr
+    expect(out).not.toContain("repaired");
+    expect(out).toContain("export TREAD_ENV=");
+    expect(err).toContain("repaired");
+    expect(fs.readlinkSync(launcher)).toBe(path.join(home, ".local/share/claude/versions/7.7.7"));
+    fs.rmSync(launcher, { force: true });
   });
 
   test("doctor 报告被遗弃的 sync 锁，--fix 清掉它", async () => {

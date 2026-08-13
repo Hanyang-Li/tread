@@ -190,6 +190,16 @@ Refusals nest: `.config` is shared as a whole, but the `tread` subdirectory insi
 
 Links are **re-synced on every activation**. Each environment keeps its own manifest (`<env>/.tread/sync.json`), so removing an entry from the config really does detach the link — tightening the config without detaching is the worst way for an allow list to fail. Detaching only touches symlinks that point at your real home, plus empty directories; never `rm -r`. Real files created inside the environment always win.
 
+### Writes inside an environment can reach back out
+
+Sharing is a symlink to the whole directory — `<env>/.local/bin` *is* `~/.local/bin` — so a write inside the environment lands on your own file. For ordinary content that is the point. It goes wrong for exactly one kind of write: a tool storing an **absolute path derived from `$HOME`**, because the shims have moved `$HOME` to the environment root.
+
+claude's native updater does this. Updating from inside an environment rebuilds the launcher as `$HOME/.local/bin/claude -> $HOME/.local/share/claude/versions/<v>`; both halves resolve through the shared link, so what lands in your real home is a launcher whose target names the environment. Nothing looks wrong — it still resolves — until that environment is deleted, and then `claude` is gone from your real home too. The binary is untouched; only the launcher points at a path that no longer exists.
+
+So tread holds one invariant: **nothing in your real home may point into any environment.** Checked before `use`, before `deactivate` and before `rm`, against every environment rather than just the one at hand — the check is silent, the repair is not. Repairing means pointing the link back at the matching path in your real home, which is sound for the same reason the damage happened: the write went through a shared link, so the file is sitting there already. `tread doctor` reports the same thing as `home links`, and `--fix` repairs it.
+
+Where that mapping is not sound the link is reported and left alone rather than guessed at — a link to an environment root, or into an isolated directory like `<env>/.claude`, is somebody else's, and tread does not redirect it.
+
 ### Logins are shared, not per environment
 
 You log in once, on your real home, and every environment is already logged in — `create` and `cp` alike. Each agent gets there differently, and only one of them needed tread to do anything about it:
@@ -240,6 +250,8 @@ Two things worth knowing. Every environment shares one account — that is the p
 
   `tread doctor` reports against your current directory, and only for the ones that **actually exist** — `~/AGENTS.md` and `~/.mcp.json` do not exist by default, so if you never created them they never show up in the warnings.
 
+- **The real-home protection covers references, not content.** A symlink written into your real home from inside an environment is caught and repaired; a file *deleted* there is not — claude's installer pruning old builds out of `~/.local/share/claude/versions/` is doing exactly that, harmlessly, and nothing after the fact can tell it apart from any other delete. The check also runs on tread's own commands, so removing an environment with `rm -rf` instead of `tread rm` skips it. `tread doctor` is the catch-all.
+
 - **Only environment-level (global) content is managed.** Project-scope skills / plugins / MCP servers / hooks are neither read nor displayed — those belong to each agent.
 
 - **A new kimi environment is seeded with the provider / model config from your real home** (hooks stripped). kimi stores model settings separately from credentials, and without the seed the environment will not start.
@@ -250,7 +262,7 @@ Two things worth knowing. Every environment shares one account — that is the p
 
 ```sh
 bun install
-bun test              # 271 tests, e2e included
+bun test              # 316 tests, e2e included
 bun run typecheck
 bun run src/index.ts  # run straight from source
 ```

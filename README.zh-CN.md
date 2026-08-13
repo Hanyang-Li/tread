@@ -190,6 +190,16 @@ allow:
 
 链接在**每次激活时重新同步**。环境自己记一份清单（`<env>/.tread/sync.json`），所以从配置里删掉一项会真的把链接摘掉——只收紧配置却不摘链接，是白名单最坏的失败方式。摘除只动指向真 home 的 symlink 和空目录，绝不 `rm -r`：环境里自己建的真实文件永远优先。
 
+### 环境里的写，会反向落到真 home
+
+共享是整个目录一条 symlink——`<env>/.local/bin` **就是** `~/.local/bin`——所以环境里的写会落到你自己的文件上。对普通内容来说这正是共享的意义。出问题的只有一类写：工具存下**一条由 `$HOME` 拼出来的绝对路径**，而 shim 已经把 `$HOME` 换成了环境根目录。
+
+claude 的原生自更新器就是这样。在环境里更新时，它把 launcher 重建成 `$HOME/.local/bin/claude -> $HOME/.local/share/claude/versions/<版本>`，两半都穿过共享链接，于是落在你真 home 里的是一条**目标指向环境**的 launcher。此时看不出任何异常——它照样能解析——直到那个环境被删掉，你真 home 里的 `claude` 也跟着没了。二进制其实毫发无损，只是 launcher 指向了一条不复存在的路径。
+
+所以 tread 守一条不变量：**真 home 里不允许存在任何指向环境的软链。** 在 `use`、`deactivate`、`rm` 之前各查一次，而且是针对所有环境而不只是手头这个——检查是静默的，修复不是。修复就是把链接指回真 home 里对应的那条路径，它成立的理由恰恰就是破坏发生的理由：写是穿过共享链接过去的，文件本来就在那儿。`tread doctor` 里同一件事叫 `home links`，`--fix` 负责修。
+
+映射不成立的地方宁可报告也不猜：指向环境根目录的、或者指向 `<env>/.claude` 这类隔离目录的，都只报告不动手——那不是 tread 造成的，也就不该由 tread 改。
+
 ### 登录态是共享的，不是每环境一份
 
 在真 home 上登录一次，所有环境就都是已登录状态，`create` 和 `cp` 都一样。三家走的路不同，只有一家需要 tread 额外做事：
@@ -240,6 +250,8 @@ login:
 
   `tread doctor` 按当前目录报，且只报**真的存在**的那些——`~/AGENTS.md`、`~/.mcp.json` 这类默认不存在，你不建就不会出现在警告里。
 
+- **对真 home 的保护守的是引用，不是内容。** 环境里往真 home 写下的软链会被发现并修回来；在那儿**删掉**一个文件则不会——claude 的安装器清理 `~/.local/share/claude/versions/` 里的旧版本干的就是这件事（无害），而事后没有任何办法把它和一次正常删除区分开。检查还只挂在 tread 自己的命令上，所以用 `rm -rf` 而不是 `tread rm` 删环境就绕过去了，`tread doctor` 是兜底。
+
 - **只管理环境级（全局）内容。** project scope 的 skill / plugin / MCP / hook 不读也不显示——那是各 agent 自己的事。
 
 - **新建 kimi 环境会从真 home 播种 provider / model 配置**（剥掉 hooks）。kimi 把模型设置和凭证分开存，不播种的话环境根本起不来。
@@ -250,7 +262,7 @@ login:
 
 ```sh
 bun install
-bun test              # 271 个测试，含 e2e
+bun test              # 316 个测试，含 e2e
 bun run typecheck
 bun run src/index.ts  # 直接从源码跑
 ```

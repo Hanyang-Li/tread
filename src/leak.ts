@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { realHome } from "./paths.ts";
+import { isUnder, realHome } from "./paths.ts";
 
 /**
  * Real-home configuration that claude loads even from inside an environment.
@@ -59,11 +59,6 @@ function present(home: string, rel: string): boolean {
   } catch {
     return false;
   }
-}
-
-function isUnder(p: string, dir: string): boolean {
-  const rel = path.relative(dir, p);
-  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
 /**

@@ -12,6 +12,7 @@ import {
 import { clearStale, staleLock } from "./lock.ts";
 import { loginIssues, sharedLogin } from "./login.ts";
 import { homeLeak } from "./leak.ts";
+import { findStrayLinks, healStrayLinks, repairStrayLink, type StrayLink } from "./stray.ts";
 import { copyEnv } from "./copy.ts";
 import { complete, completionState, writeCompletion } from "./completion.ts";
 import { realBinary, shimsHealthy, writeShims } from "./shims.ts";
@@ -24,6 +25,21 @@ import {
 } from "./views.ts";
 
 type Out = (s: string) => void;
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/**
+ * `tildify` against the real home, and shortening the home itself.
+ *
+ * Two differences from the bare call, both of which matter for paths in the
+ * user's own home: `tildify` defaults to `$HOME`, which inside a shim is the
+ * environment root, so a real-home path would print in full; and it only
+ * abbreviates strict descendants, leaving the home itself spelled out.
+ */
+function shortHome(p: string): string {
+  const home = realHome();
+  return p === home ? "~" : tildify(p, home);
+}
 
 export const HELP = `tread — isolated environments for AI coding agents
 
@@ -169,7 +185,6 @@ function cpCommand(args: string[], out: Out): number {
   if (!src || !dst) throw new Error("cp needs two names\n\n  tread cp <src> <dst>");
   const c = color(colorsEnabled());
   const r = copyEnv(src, dst);
-  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
   const notes = ["skipped sessions and caches", `${plural(r.rewritten, "path")} rewritten`];
   if (r.skipped.length > 0) notes.push(`${plural(r.skipped.length, "file")} skipped`);
 
@@ -186,11 +201,11 @@ function rmCommand(args: string[], out: Out): number {
   const name = args[0];
   if (!name) throw new Error("rm needs a name\n\n  tread rm <name>");
   const root = requireEnv(name);
+  const c = color(colorsEnabled());
   if (activeName() === name) {
     throw new Error(`"${name}" is currently active\n\n  tread deactivate   then try again`);
   }
   if (!force) {
-    const c = color(colorsEnabled());
     const answer = prompt(
       `remove ${tildify(root)}\n${c.yellow("this cannot be undone.")} [y/N]`,
     );
@@ -199,6 +214,11 @@ function rmCommand(args: string[], out: Out): number {
       return 1;
     }
   }
+  // before the delete, and not only for the environment being deleted. This is
+  // the moment a link into *this* environment becomes dangling, but repairing
+  // the others while standing here costs nothing and the invariant is the same
+  // one either way: the real home must not point into any environment.
+  healStray(out, c);
   removeEnv(name);
   out(`removed  ${name}\n`);
   return 0;
@@ -288,6 +308,40 @@ function doctorCommand(args: string[], out: Out): number {
     rows.push([`  ${name}`, bin ? ok : c.red("missing"), bin ? `${tildify(bin)}  ${note}` : ""]);
   }
 
+  // the other half of sharing, and the only one that can damage the user's own
+  // machine: a tool updating itself inside an environment writes through the
+  // shared directory and can leave a link in the real home whose target names
+  // that environment. Deleting the environment then takes the user's command
+  // with it. Placed with the shims rather than under an environment because
+  // the environment that caused it may already be gone.
+  const stray = findStrayLinks();
+  // what --fix actually repaired, not what it was allowed to try: a write can
+  // still fail on a read-only directory, and reporting that one as repaired
+  // would be the report lying about the user's own home
+  const repaired = new Set<StrayLink>();
+  if (fix) for (const s of stray.found) if (repairStrayLink(s)) repaired.add(s);
+  const strayLeft = stray.found.filter((s) => !repaired.has(s));
+  rows.push([
+    "home links",
+    stray.found.length === 0
+      ? stray.truncated ? c.dim("not fully checked") : ok
+      : strayLeft.length === 0 ? c.green(`${plural(stray.found.length, "link")} repaired`)
+      : c.red(plural(strayLeft.length, "link")),
+    stray.found.length === 0
+      ? `${shortHome(realHome())}   ${c.dim("nothing points into an environment")}`
+      : `${shortHome(realHome())}   ${c.dim("deleting the environment takes these with it")}`,
+  ]);
+  for (const s of stray.found) {
+    const done = repaired.has(s);
+    rows.push([
+      `  ${shortHome(s.link)}`,
+      done ? c.green("repaired")
+      : !s.repair ? c.red("no match in ~")
+      : s.dangling ? c.red("broken") : c.yellow("crossed"),
+      `→ ${shortHome(done ? s.repair! : s.target)}`,
+    ]);
+  }
+
   // reported once, not per environment: sharing is the default and the
   // mechanism belongs to the agent. An environment that opted out is the
   // exception and shows up in its own section below. Worth a row at all
@@ -371,7 +425,6 @@ function doctorCommand(args: string[], out: Out): number {
     results.push({ name, issues });
   }
 
-  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
   // the status column reports what is still wrong, so an env whose every
   // issue was repaired does not go on claiming problems it no longer has
   const left = (r: { issues: Issue[] }) => r.issues.filter((i) => !i.fixed).length;
@@ -388,7 +441,10 @@ function doctorCommand(args: string[], out: Out): number {
     }
   });
 
-  const remaining = results.reduce((n, r) => n + left(r), 0);
+  // stray links count towards the total even though they sit in the shared
+  // section: they are the one thing doctor reports that breaks a command
+  // outside every environment, so the call to action has to cover them
+  const remaining = results.reduce((n, r) => n + left(r), 0) + strayLeft.length;
   if (remaining > 0) {
     out(
       `\n${plural(remaining, "problem")}.` +
@@ -420,6 +476,30 @@ function reportHomeLeak(out: Out, c: Palette): void {
   const short = (p: string) => (p === leak.home ? "~" : tildify(p, leak.home));
   const list = leak.surfaces.map((s) => short(path.join(leak.home, s))).join("  ");
   out(`\n${c.yellow("⚠")}  leaking in from ~:  ${list}\n`);
+}
+
+/**
+ * Repair the links pointing into an environment, and say what was touched.
+ *
+ * The check is silent; the repair is not. This writes to the user's own home,
+ * and doing that without a word would leave nothing to pull on later when
+ * something else looks strange — the whole reason the original breakage was
+ * hard to place is that it happened quietly.
+ *
+ * Callers on the `use` path must pass the stderr writer: their stdout is
+ * eval'd by the shell function, where a stray line is a syntax error.
+ */
+function healStray(emit: Out, c: Palette): void {
+  const { repaired, stuck } = healStrayLinks();
+  for (const s of repaired) {
+    emit(`tread: repaired ${shortHome(s.link)}${c.dim(` · pointed into "${s.env}"`)}\n`);
+  }
+  for (const s of stuck) {
+    emit(
+      `${c.yellow("⚠")}  ${shortHome(s.link)} points into "${s.env}"` +
+        ` and has no match in ${shortHome(realHome())}\n`,
+    );
+  }
 }
 
 function isBrokenLink(p: string): boolean {
@@ -491,12 +571,20 @@ export async function runCommand(argv: string[], out: Out, err: Out = out): Prom
         if (sub === "deactivate") {
           // stdout is eval'd by the shell function, so talk on stderr
           out(deactivateLines());
+          // leaving is the first moment the damage this session may have done
+          // is complete, so repairing here keeps a stray link from outliving
+          // the session that created it
+          healStray(err, c);
           err(`tread: deactivated\n`);
           return 0;
         }
         if (sub !== "use") throw new Error(`unknown _export "${sub ?? ""}"`);
         const name = args[0];
         if (!name) throw new Error("use needs a name\n\n  tread use <name>");
+        // before the activation rather than after: whatever the previous
+        // session left behind is repaired while the environment it names may
+        // still exist, which is when the mapping back is verifiable
+        healStray(err, c);
         const lines = exportLines(name);
         out(lines);
         err(`tread: ${c.brightGreen(name)}\n`);

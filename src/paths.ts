@@ -16,6 +16,17 @@ export function realHome(): string {
   return process.env.TREAD_HOME || os.homedir();
 }
 
+/**
+ * True when `p` sits strictly below `dir`.
+ *
+ * Both halves matter: a path equal to `dir` is not under it, and a textual
+ * `startsWith` would call `/a/bc` a child of `/a/b`.
+ */
+export function isUnder(p: string, dir: string): boolean {
+  const rel = path.relative(dir, p);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
 export function stateDir(): string {
   return process.env.TREAD_STATE_DIR ?? path.join(realHome(), ".local/state/tread");
 }

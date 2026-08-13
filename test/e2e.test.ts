@@ -241,6 +241,36 @@ describe("e2e", () => {
     expect(b.err).toContain("tread: deactivated");
   }, 20000);
 
+  // The bug this reproduces, end to end: claude updating itself inside an
+  // environment rewrites `$HOME/.local/bin/claude`, which is the user's real
+  // launcher because `.local/bin` is shared as a whole directory, and points
+  // it at a path under the environment. Deleting the environment then leaves
+  // the real home with a dangling launcher — `command not found: claude`
+  // outside every environment, with the binary still sitting there untouched.
+  test("环境内写坏的 launcher 在 rm 之后仍然可用", async () => {
+    const home = fs.mkdtempSync(path.join(tmp, "home-stray-"));
+    const opts = { HOME: home, TREAD_HOME: home };
+    for (const rel of [".local/bin", ".local/share"]) {
+      fs.mkdirSync(path.join(home, rel), { recursive: true });
+    }
+    expect((await tread(["create", "doomed"], opts)).code).toBe(0);
+
+    const rel = ".local/share/claude/versions/1.2.3";
+    fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true });
+    fs.writeFileSync(path.join(home, rel), "binary");
+    const launcher = path.join(home, ".local/bin/claude");
+    fs.symlinkSync(path.join(state, "envs/doomed", rel), launcher);
+    // resolves through the shared link, so nothing looks wrong yet
+    expect(fs.existsSync(launcher)).toBe(true);
+
+    const r = await tread(["rm", "doomed", "--force"], opts);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("repaired");
+    expect(fs.existsSync(path.join(state, "envs/doomed"))).toBe(false);
+    expect(fs.existsSync(launcher)).toBe(true);
+    expect(fs.readlinkSync(launcher)).toBe(path.join(home, rel));
+  }, 20000);
+
   // 光追加 [env_var.tread] 表，对写了显式 format 的配置等于什么都没做：
   // starship 只渲染顶层 format 点名的模块
   describe("init starship --write", () => {
