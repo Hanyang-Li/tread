@@ -60,6 +60,17 @@ function script(name: string, agent: Agent, real: string | null): string {
     lines.push(`${key}="$TREAD_ENV_DIR/${spec.dir}"`, `export ${key}`);
   }
 
+  if (agent === "claude") {
+    lines.push(
+      "",
+      "# claude's native updater writes through the shared .local directories;",
+      "# keep updates outside tread so one environment cannot break the global install.",
+      "DISABLE_UPDATES=1",
+      "DISABLE_AUTOUPDATER=1",
+      "export DISABLE_UPDATES DISABLE_AUTOUPDATER",
+    );
+  }
+
   // Resolved here rather than baked in by `tread`: one shim serves every
   // environment and finds out which one it is from $TREAD_ENV_DIR, so whether
   // this environment shares the login can only be answered at launch. A `test

@@ -74,6 +74,43 @@ describe("shims", () => {
     }
   });
 
+  test("claude shim 只在环境内禁用自身更新", async () => {
+    const fakeDir = path.join(tmp, "fakebin-claude-update");
+    fs.mkdirSync(fakeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeDir, "claude"),
+      '#!/bin/sh\nprintf "updates=%s auto=%s\\n" "${DISABLE_UPDATES-UNSET}" "${DISABLE_AUTOUPDATER-UNSET}"\n',
+      { mode: 0o755 },
+    );
+
+    const prev = process.env.PATH;
+    process.env.PATH = `${fakeDir}:${prev}`;
+    fs.rmSync(shimsDir(), { recursive: true, force: true });
+    writeShims();
+    process.env.PATH = prev;
+
+    const run = async (envRoot: string): Promise<string> => {
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        PATH: `${fakeDir}:${prev}`,
+        TREAD_ENV_DIR: envRoot,
+      };
+      delete env.DISABLE_UPDATES;
+      delete env.DISABLE_AUTOUPDATER;
+      const proc = Bun.spawn([path.join(shimsDir(), "claude")], {
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const out = await new Response(proc.stdout).text();
+      expect(await proc.exited).toBe(0);
+      return out.trim();
+    };
+
+    expect(await run(path.join(tmp, "envs", "updates-off"))).toBe("updates=1 auto=1");
+    expect(await run("")).toBe("updates=UNSET auto=UNSET");
+  });
+
   test("shim 真的会把 HOME 和变量传给被调用的程序", async () => {
     // stand in for cursor-agent: a script that prints what it received
     const fakeDir = path.join(tmp, "fakebin");
