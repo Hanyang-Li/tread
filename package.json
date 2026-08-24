@@ -1,6 +1,6 @@
 {
   "name": "tread",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "conda-style isolated environments for AI coding agents (claude, cursor-agent, kimi)",
   "type": "module",
   "bin": {
