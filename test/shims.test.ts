@@ -10,8 +10,10 @@ beforeAll(() => {
 });
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-const { writeShims, shimsHealthy, realBinary } = await import("../src/shims.ts");
-const { shimsDir } = await import("../src/paths.ts");
+const {
+  writeShims, shimsHealthy, realBinary, findInEnvBinaries, removeInEnvBinary, envPathEntries,
+} = await import("../src/shims.ts");
+const { shimsDir, envsDir } = await import("../src/paths.ts");
 
 describe("shims", () => {
   test("为每个 agent 及其别名各生成一个可执行 shim", () => {
@@ -290,5 +292,214 @@ describe("shim 覆写", () => {
   test("不在 shim 目录里留临时文件", () => {
     writeShims();
     expect(fs.readdirSync(shimsDir()).some((n) => n.endsWith(".tmp"))).toBe(false);
+  });
+});
+
+describe("自动更新：环境内关掉，环境外不动", () => {
+  /**
+   * Run one shim against a fake binary that reports what it was handed.
+   *
+   * `real=` is resolved while the shims are written, so the fake has to be on
+   * PATH for both halves — generation and launch — or the shim bakes in the
+   * machine's actual agent and the test measures that instead.
+   */
+  async function run(name: string, probe: string, envRoot: string): Promise<string> {
+    const fakeDir = path.join(tmp, `fakebin-noupdate-${name}`);
+    fs.mkdirSync(fakeDir, { recursive: true });
+    fs.writeFileSync(path.join(fakeDir, name), probe, { mode: 0o755 });
+
+    const prev = process.env.PATH;
+    process.env.PATH = `${fakeDir}:${prev}`;
+    fs.rmSync(shimsDir(), { recursive: true, force: true });
+    writeShims();
+    process.env.PATH = prev;
+
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      PATH: `${fakeDir}:${prev}`,
+      TREAD_ENV_DIR: envRoot,
+    };
+    delete env.KIMI_CODE_NO_AUTO_UPDATE;
+    delete env.KIMI_CLI_NO_AUTO_UPDATE;
+    const proc = Bun.spawn([path.join(shimsDir(), name), "--print", "hi"], {
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = await new Response(proc.stdout).text();
+    expect(await proc.exited).toBe(0);
+    return out.trim();
+  }
+
+  const kimiProbe =
+    '#!/bin/sh\nprintf "code=%s legacy=%s\\n" '
+    + '"${KIMI_CODE_NO_AUTO_UPDATE-UNSET}" "${KIMI_CLI_NO_AUTO_UPDATE-UNSET}"\n';
+
+  test("kimi shim 只在环境内禁用自身更新", async () => {
+    // kimi installs into KIMI_CODE_HOME, which is the *isolated* .kimi-code —
+    // so an update in here is a second 180MB binary inside the environment
+    expect(await run("kimi", kimiProbe, path.join(tmp, "envs", "kimi-off"))).toBe(
+      "code=1 legacy=1",
+    );
+    expect(await run("kimi", kimiProbe, "")).toBe("code=UNSET legacy=UNSET");
+  });
+
+  const cursorProbe = '#!/bin/sh\nprintf "args=%s\\n" "$*"\n';
+
+  test("cursor 没有环境变量可用，shim 把 flag 插在用户参数前面", async () => {
+    expect(await run("cursor-agent", cursorProbe, path.join(tmp, "envs", "cursor-off"))).toBe(
+      "args=--disable-auto-update --print hi",
+    );
+  });
+
+  test("环境外的 cursor 参数原样透传，一个字都不加", async () => {
+    expect(await run("cursor-agent", cursorProbe, "")).toBe("args=--print hi");
+  });
+});
+
+describe("环境内的自更新副本", () => {
+  const envName = "selfupdated";
+  const envBinDir = () => path.join(envsDir(), envName, ".kimi-code", "bin");
+
+  function seed(): { inside: string; outside: string } {
+    const inside = path.join(envBinDir(), "kimi");
+    fs.mkdirSync(path.dirname(inside), { recursive: true });
+    fs.writeFileSync(inside, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const outsideDir = path.join(tmp, "outside-bin");
+    fs.mkdirSync(outsideDir, { recursive: true });
+    const outside = path.join(outsideDir, "kimi");
+    fs.writeFileSync(outside, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    return { inside, outside };
+  }
+
+  test("realBinary 跳过环境内的目录，即使 PATH 把它排在前面", () => {
+    // exactly the order kimi's installer leaves behind: it prepends
+    // `<env>/.kimi-code/bin` to the shared .zshrc, ahead of the real install
+    const { inside, outside } = seed();
+    const prev = process.env.PATH;
+    process.env.PATH = `${path.dirname(inside)}:${path.dirname(outside)}`;
+    expect(realBinary("kimi")).toBe(outside);
+    process.env.PATH = prev;
+  });
+
+  test("realBinary 也拒绝只是指向环境内的软链", () => {
+    const { inside } = seed();
+    const linkDir = path.join(tmp, "link-bin");
+    fs.mkdirSync(linkDir, { recursive: true });
+    const link = path.join(linkDir, "kimi");
+    fs.rmSync(link, { force: true });
+    fs.symlinkSync(inside, link);
+    const prev = process.env.PATH;
+    process.env.PATH = linkDir;
+    expect(realBinary("kimi")).toBe(null);
+    process.env.PATH = prev;
+  });
+
+  test("findInEnvBinaries 报出副本、体积，以及它遮住了谁", () => {
+    const { inside, outside } = seed();
+    const prev = process.env.PATH;
+    process.env.PATH = `${path.dirname(inside)}:${path.dirname(outside)}`;
+    const found = findInEnvBinaries();
+    process.env.PATH = prev;
+
+    expect(found).toHaveLength(1);
+    expect(found[0]!.agent).toBe("kimi");
+    expect(found[0]!.env).toBe(envName);
+    expect(found[0]!.path).toBe(inside);
+    expect(found[0]!.size).toBeGreaterThan(0);
+    expect(found[0]!.outside).toBe(outside);
+  });
+
+  test("--fix 删掉副本，连空掉的 bin 目录一起", () => {
+    const { inside, outside } = seed();
+    const prev = process.env.PATH;
+    process.env.PATH = path.dirname(outside);
+    const [b] = findInEnvBinaries();
+    expect(removeInEnvBinary(b!)).toBe(true);
+    process.env.PATH = prev;
+
+    expect(fs.existsSync(inside)).toBe(false);
+    expect(fs.existsSync(path.dirname(inside))).toBe(false);
+    expect(fs.existsSync(outside)).toBe(true);
+  });
+
+  test("外面没有副本时拒绝删除：tread 不拿掉唯一的一份", () => {
+    const { inside } = seed();
+    const prev = process.env.PATH;
+    process.env.PATH = path.join(tmp, "nothing-here");
+    const [b] = findInEnvBinaries();
+    expect(b!.outside).toBe(null);
+    expect(removeInEnvBinary(b!)).toBe(false);
+    process.env.PATH = prev;
+    expect(fs.existsSync(inside)).toBe(true);
+  });
+
+  test("软链回真实 home 的不算副本：那是 ensureSkeleton 在正常工作", () => {
+    fs.rmSync(envBinDir(), { recursive: true, force: true });
+    fs.mkdirSync(envBinDir(), { recursive: true });
+    const outsideDir = path.join(tmp, "outside-bin");
+    fs.mkdirSync(outsideDir, { recursive: true });
+    const outside = path.join(outsideDir, "kimi");
+    fs.writeFileSync(outside, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    fs.symlinkSync(outside, path.join(envBinDir(), "kimi"));
+    expect(findInEnvBinaries()).toEqual([]);
+    fs.rmSync(envBinDir(), { recursive: true, force: true });
+  });
+});
+
+describe("PATH 里指向环境的条目", () => {
+  test("报出条目和写下它的那一行 rc", () => {
+    const home = fs.mkdtempSync(path.join(tmp, "home-"));
+    const dir = path.join(envsDir(), "consult", ".kimi-code", "bin");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".zshrc"),
+      `# something\nexport PATH="${dir}:$PATH"\n`,
+    );
+
+    const prevHome = process.env.TREAD_HOME;
+    const prevPath = process.env.PATH;
+    process.env.TREAD_HOME = home;
+    process.env.PATH = `${dir}:/usr/bin`;
+    const found = envPathEntries();
+    process.env.TREAD_HOME = prevHome;
+    process.env.PATH = prevPath;
+
+    expect(found).toEqual([{ dir, env: "consult", source: ".zshrc:2" }]);
+  });
+
+  test("当前环境把自己的目录放上 PATH 不算问题：claude 的插件 bin 就是这样", () => {
+    const home = fs.mkdtempSync(path.join(tmp, "home-"));
+    const envRoot = path.join(envsDir(), "cli-dev");
+    const pluginBin = path.join(envRoot, ".claude/plugins/cache/x/1.0.0/bin");
+    fs.mkdirSync(pluginBin, { recursive: true });
+
+    const prevHome = process.env.TREAD_HOME;
+    const prevPath = process.env.PATH;
+    const prevEnv = process.env.TREAD_ENV_DIR;
+    process.env.TREAD_HOME = home;
+    process.env.TREAD_ENV_DIR = envRoot;
+    process.env.PATH = `${pluginBin}:/usr/bin`;
+    const found = envPathEntries();
+    process.env.TREAD_HOME = prevHome;
+    process.env.PATH = prevPath;
+    if (prevEnv === undefined) delete process.env.TREAD_ENV_DIR;
+    else process.env.TREAD_ENV_DIR = prevEnv;
+
+    expect(found).toEqual([]);
+  });
+
+  test("rc 里已经没有了就只是这个 shell 的残留，不算待办", () => {
+    const home = fs.mkdtempSync(path.join(tmp, "home-"));
+    const dir = path.join(envsDir(), "consult", ".kimi-code", "bin");
+    const prevHome = process.env.TREAD_HOME;
+    const prevPath = process.env.PATH;
+    process.env.TREAD_HOME = home;
+    process.env.PATH = `${dir}:/usr/bin`;
+    const found = envPathEntries();
+    process.env.TREAD_HOME = prevHome;
+    process.env.PATH = prevPath;
+
+    expect(found).toEqual([{ dir, env: "consult", source: null }]);
   });
 });

@@ -30,6 +30,40 @@ export interface AgentSpec {
    */
   loginVars(absDir: string, isolated: boolean): Record<string, string>;
   /**
+   * How to stop the agent updating itself while an environment is active.
+   *
+   * Every one of them installs its update relative to something a shim has
+   * moved, so an update from in here lands in the wrong place and then
+   * outlives the environment. claude and cursor resolve their install root
+   * through `homedir()` and reach the real home through the shared `.local`
+   * link, so what they leave behind is a launcher in the user's own home whose
+   * target names an environment — `stray.ts` is about repairing exactly that.
+   * kimi's is worse, because its install root is the *isolated* `.kimi-code`:
+   * the update writes a second 180MB binary inside one environment, the
+   * installer prepends that absolute path to the shared `.zshrc`, and from
+   * then on every other environment — and plain `kimi` outside tread — starts
+   * resolving to it.
+   *
+   * `vars` is the lever wherever the agent has one. `args` is for cursor,
+   * which has none: its only switch is a hidden `--disable-auto-update` on the
+   * root command, so the shim inserts it. Either way this applies only while
+   * TREAD_ENV_DIR is set — updating is still the user's to do, it just has to
+   * happen outside an environment.
+   */
+  noUpdate: { vars: Record<string, string>; args: string[] };
+  /**
+   * Where an update run inside an environment leaves the binary, relative to
+   * the env root — or null when the agent's install root is a shared path, so
+   * the copy lands in the real home and the damage is a stray link instead.
+   *
+   * Only kimi has one: `KIMI_CODE_HOME` is `<env>/.kimi-code`, which is
+   * isolated by definition, so nothing about the write reaches the real home
+   * and there is no link for `stray.ts` to find. What there is instead is a
+   * whole binary inside the environment, which `doctor` reports and `--fix`
+   * removes so the environment falls back to the shared install.
+   */
+  inEnvBin: string | null;
+  /**
    * Whether the agent must be launched with HOME pointed at the env root.
    *
    * True for all three, and for one shared reason: an agent's own config
@@ -72,6 +106,8 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     // exports it into the shell, so a claude started by absolute path —
     // bypassing the shim entirely — is still redirected.
     envVars: (d) => ({ CLAUDE_CONFIG_DIR: d }),
+    noUpdate: { vars: { DISABLE_UPDATES: "1", DISABLE_AUTOUPDATER: "1" }, args: [] },
+    inEnvBin: null,
     // isolated resolves to the config dir rather than leaving the variable
     // unset: both give this environment its own keychain item, but a value
     // survives switching from a sharing environment to this one, where an
@@ -89,6 +125,10 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     aliases: ["agent"],
     dir: ".cursor",
     envVars: (d) => ({ CURSOR_CONFIG_DIR: d, CURSOR_DATA_DIR: d }),
+    // no environment variable exists; the flag is hidden but it is the same
+    // one the background check reads, and `cursor-agent update` still updates
+    noUpdate: { vars: {}, args: ["--disable-auto-update"] },
+    inEnvBin: null,
     // nothing to set: cursor-agent stores its login in the keychain under a
     // fixed service name, so sharing Library/Keychains already shares it
     loginVars: () => ({}),
@@ -109,6 +149,13 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     aliases: [],
     dir: ".kimi-code",
     envVars: (d) => ({ KIMI_CODE_HOME: d }),
+    // both names, because kimi still honours the kimi-cli one it inherited and
+    // an older binary in an environment may only know that one
+    noUpdate: {
+      vars: { KIMI_CODE_NO_AUTO_UPDATE: "1", KIMI_CLI_NO_AUTO_UPDATE: "1" },
+      args: [],
+    },
+    inEnvBin: ".kimi-code/bin/kimi",
     // nothing to set: kimi keeps credentials in files, which `ensureSkeleton`
     // symlinks back to the real home
     loginVars: () => ({}),

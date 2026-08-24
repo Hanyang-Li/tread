@@ -200,6 +200,22 @@ So tread holds one invariant: **nothing in your real home may point into any env
 
 Where that mapping is not sound the link is reported and left alone rather than guessed at — a link to an environment root, or into an isolated directory like `<env>/.claude`, is somebody else's, and tread does not redirect it.
 
+### Agents do not update themselves inside an environment
+
+All three install their update relative to something the shims have moved, so an update run from inside an environment lands somewhere no environment asked for — and outlives the one that pulled it. The shims switch the updaters off while `TREAD_ENV_DIR` is set, and only then: updating from your real home is untouched, and it is the only place it is safe.
+
+| agent | switch | what an update from in here would leave behind |
+|---|---|---|
+| claude | `DISABLE_UPDATES=1` + `DISABLE_AUTOUPDATER=1` | `~/.local/bin/claude` rebuilt as a link into the environment — the stray link above |
+| cursor | `--disable-auto-update`, inserted by the shim | the same thing, via `~/.local/share/cursor-agent/versions/` |
+| kimi | `KIMI_CODE_NO_AUTO_UPDATE=1` (and the legacy `KIMI_CLI_NO_AUTO_UPDATE`) | a second ~180MB binary **inside** the environment |
+
+cursor is the odd one out: it has no environment variable for this at all, only a hidden `--disable-auto-update` on its root command, so the shim types it ahead of your own arguments. An explicit `cursor-agent update` still updates — the flag only stops the check a chat session starts on its own.
+
+kimi is the one that slips past `home links` entirely. `KIMI_CODE_HOME` is `<env>/.kimi-code`, which is isolated by definition, so the update never touches your real home and there is no link to repair. What it does instead is leave the whole binary in one environment and prepend that absolute path to the shared `~/.zshrc` — after which every environment, and plain `kimi` outside tread, resolves to one environment's private copy at whatever version that session happened to pull. Delete the environment and `kimi` is gone from your machine.
+
+So resolving a shim's target now skips two things: tread's own shim directory, and **any directory inside an environment**, both when the shim is generated and in its runtime fallback. `tread doctor` reports what is already there as `env installs` — the copy, its size, the install it shadows, and the `~/.zshrc` line that put it on `PATH`. `--fix` deletes the copy, provided there is one outside to fall back on. The rc line is named and left alone: a shell rc is yours, and `doctor` does not edit config it did not write.
+
 ### Logins are shared, not per environment
 
 You log in once, on your real home, and every environment is already logged in — `create` and `cp` alike. Each agent gets there differently, and only one of them needed tread to do anything about it:
@@ -251,6 +267,8 @@ Two things worth knowing. Every environment shares one account — that is the p
   `tread doctor` reports against your current directory, and only for the ones that **actually exist** — `~/AGENTS.md` and `~/.mcp.json` do not exist by default, so if you never created them they never show up in the warnings.
 
 - **The real-home protection covers references, not content.** A symlink written into your real home from inside an environment is caught and repaired; a file *deleted* there is not — claude's installer pruning old builds out of `~/.local/share/claude/versions/` is doing exactly that, harmlessly, and nothing after the fact can tell it apart from any other delete. The check also runs on tread's own commands, so removing an environment with `rm -rf` instead of `tread rm` skips it. `tread doctor` is the catch-all.
+
+- **Switching the updaters off is the shim's doing, so an agent started by absolute path is not covered.** `<abs>/kimi` inside an active environment never runs `<state>/shims/kimi` and will update itself into `<env>/.kimi-code/bin` as before. The variables are deliberately *not* exported into your shell by `tread use` — `DISABLE_UPDATES` is a generic enough name that suppressing it account-wide would reach tools that have nothing to do with tread. `tread doctor` catches the result either way.
 
 - **Only environment-level (global) content is managed.** Project-scope skills / plugins / MCP servers / hooks are neither read nor displayed — those belong to each agent.
 

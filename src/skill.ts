@@ -169,6 +169,14 @@ tread doctor <env> [--fix]  # the shared setup plus that one environment
   \`~/.claude/CLAUDE.md\` gets through either way: the memory walk ignores \`.git\`,
   and no environment closes that one. \`tread doctor\` reports both for the
   directory it is run in.
+- **An agent updated itself and now the wrong binary runs everywhere.** Updating
+  from inside an environment is switched off for all three, but an environment
+  from before that may still hold its own copy — \`<env>/.kimi-code/bin/kimi\` is
+  the one that happens, because kimi installs into its own isolated config dir.
+  \`tread doctor\` reports it as \`env installs\` and \`--fix\` removes it, as long
+  as there is an install outside to fall back on. A \`PATH\` line in the user's
+  \`.zshrc\` naming an environment is reported and left for them to remove.
+  Update agents from the real home, never from in here.
 - **\`tread use\` says the shell integration is not loaded.** A child process
   cannot change its parent's environment — \`tread init zsh --write\`.
 - **\`tread\` reports no environments.** You are on a tread older than ${VERSION};

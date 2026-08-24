@@ -6,8 +6,8 @@ import {
   syncHomeLinks,
 } from "./env.ts";
 import {
-  activationEnv, agentDir, completionFile, envDir, realHome, shimsDir, skillsDir, stateDir,
-  syncLockFile,
+  activationEnv, agentDir, completionFile, envDir, envsDir, realHome, shimsDir, skillsDir,
+  stateDir, syncLockFile,
 } from "./paths.ts";
 import { clearStale, staleLock } from "./lock.ts";
 import { loginIssues, sharedLogin } from "./login.ts";
@@ -15,7 +15,10 @@ import { homeLeak } from "./leak.ts";
 import { findStrayLinks, healStrayLinks, repairStrayLink, type StrayLink } from "./stray.ts";
 import { copyEnv } from "./copy.ts";
 import { complete, completionState, writeCompletion } from "./completion.ts";
-import { realBinary, shimsHealthy, writeShims } from "./shims.ts";
+import {
+  envPathEntries, findInEnvBinaries, realBinary, removeInEnvBinary, shimsHealthy, writeShims,
+  type InEnvBinary,
+} from "./shims.ts";
 import { deactivateLines, exportLines, initSnippet, shellLoaded, writeInit } from "./shell.ts";
 import { colorsEnabled, color, formatError, table, tildify, type Palette } from "./render.ts";
 import { VERSION } from "./version.ts";
@@ -27,6 +30,9 @@ import {
 type Out = (s: string) => void;
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** Round bytes to MB. Only ever used on agent binaries, which are all huge. */
+const megabytes = (n: number) => `${Math.round(n / 1e6)} MB`;
 
 /**
  * `tildify` against the real home, and shortening the home itself.
@@ -295,6 +301,13 @@ function doctorCommand(args: string[], out: Out): number {
     `${tildify(stateDir())} · ${listEnvs().length} envs`
       + (only ? ` · ${c.dim(`checking ${only} only`)}` : ""),
   ]);
+  // before the shims, because --fix deleting a copy changes what `real=` is
+  // resolved against and the regenerated shim has to see the result
+  const inEnv = findInEnvBinaries();
+  const removedBins = new Set<InEnvBinary>();
+  if (fix) for (const b of inEnv) if (removeInEnvBinary(b)) removedBins.add(b);
+  const inEnvLeft = inEnv.filter((b) => !removedBins.has(b));
+
   const healthy = shimsHealthy();
   if (!healthy && fix) writeShims();
   rows.push([
@@ -306,6 +319,47 @@ function doctorCommand(args: string[], out: Out): number {
     const bin = realBinary(name);
     const note = AGENT_SPECS[agent].needsHome ? c.dim("HOME redirected") : "";
     rows.push([`  ${name}`, bin ? ok : c.red("missing"), bin ? `${tildify(bin)}  ${note}` : ""]);
+  }
+
+  // an agent that updated itself from inside an environment. Its install root
+  // was one of the isolated directories, so nothing reached the real home and
+  // nothing out here looks wrong — there is just a second binary in one
+  // environment, at a version nothing else asked for, which PATH may well be
+  // handing to every shell. Next to the shims because that is what it hijacks,
+  // and because the fix is the same one: point everything back outside.
+  const pathEntries = envPathEntries();
+  // only the ones a shell rc still exports are actionable: the rest are this
+  // shell carrying a line that has already been taken out, and a new shell
+  // drops them without anyone doing anything
+  const pathLeft = pathEntries.filter((e) => e.source !== null);
+  if (inEnv.length > 0 || pathEntries.length > 0) {
+    rows.push([
+      "env installs",
+      inEnvLeft.length + pathLeft.length > 0
+        ? c.red(plural(inEnvLeft.length + pathLeft.length, "problem"))
+        : removedBins.size > 0 ? c.green(`${removedBins.size} removed`) : ok,
+      `${shortHome(envsDir())}   ${c.dim(
+        inEnv.length > 0
+          ? "an agent updated itself in here; the copy outlives the environment"
+          : "a PATH entry still names an environment",
+      )}`,
+    ]);
+  }
+  for (const b of inEnv) {
+    rows.push([
+      `  ${b.agent} · ${b.env}`,
+      removedBins.has(b) ? c.green("removed")
+      : !b.outside ? c.red("only copy")
+      : c.yellow(megabytes(b.size)),
+      `${shortHome(b.path)}   ${b.outside ? c.dim(`shadows ${shortHome(b.outside)}`) : c.dim("reinstall outside an environment first")}`,
+    ]);
+  }
+  for (const e of pathEntries) {
+    rows.push([
+      `  PATH · ${e.env}`,
+      e.source ? c.red(e.source) : c.dim("stale in this shell"),
+      `${shortHome(e.dir)}   ${c.dim(e.source ? "written with $HOME already expanded to the env" : "already out of the rc; a new shell drops it")}`,
+    ]);
   }
 
   // the other half of sharing, and the only one that can damage the user's own
@@ -441,10 +495,13 @@ function doctorCommand(args: string[], out: Out): number {
     }
   });
 
-  // stray links count towards the total even though they sit in the shared
-  // section: they are the one thing doctor reports that breaks a command
-  // outside every environment, so the call to action has to cover them
-  const remaining = results.reduce((n, r) => n + left(r), 0) + strayLeft.length;
+  // the shared section's own findings count towards the total: stray links, a
+  // binary that installed itself into an environment and a PATH entry naming
+  // one are the things doctor reports that break a command outside every
+  // environment, so the call to action has to cover them
+  const remaining =
+    results.reduce((n, r) => n + left(r), 0) + strayLeft.length
+    + inEnvLeft.length + pathLeft.length;
   if (remaining > 0) {
     out(
       `\n${plural(remaining, "problem")}.` +

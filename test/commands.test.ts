@@ -276,6 +276,46 @@ describe("commands", () => {
     expect((await run(["doctor"])).out).toContain("nothing points into an environment");
   });
 
+  test("doctor 报出环境内自更新的副本和它污染的 PATH，--fix 删掉副本", async () => {
+    // kimi's install root is KIMI_CODE_HOME, which is the *isolated*
+    // .kimi-code — so an update inside an environment reaches the real home
+    // not at all: there is no stray link, just a second binary in one
+    // environment. It escapes anyway, because the installer writes the
+    // absolute path into the shared .zshrc.
+    const envBin = path.join(tmp, "state/envs/work/.kimi-code/bin");
+    fs.mkdirSync(envBin, { recursive: true });
+    fs.writeFileSync(path.join(envBin, "kimi"), "x".repeat(4096), { mode: 0o755 });
+    const outsideDir = path.join(home, ".local/bin");
+    fs.writeFileSync(path.join(outsideDir, "kimi"), "#!/bin/sh\n", { mode: 0o755 });
+    fs.writeFileSync(path.join(home, ".zshrc"), `export PATH="${envBin}:$PATH"\n`);
+
+    const prevPath = process.env.PATH;
+    // ahead of the real install, which is where the rc line puts it
+    process.env.PATH = `${envBin}:${outsideDir}:${prevPath}`;
+    try {
+      const { out } = await run(["doctor"]);
+      expect(out).toContain("env installs");
+      expect(out).toContain("kimi · work");
+      expect(out).toContain("shadows");
+      expect(out).toContain(".local/bin/kimi");
+      // the rc line is named, never rewritten: a shell rc is the user's own
+      expect(out).toContain(".zshrc:1");
+      // report only
+      expect(fs.existsSync(path.join(envBin, "kimi"))).toBe(true);
+
+      const fixed = await run(["doctor", "--fix"]);
+      expect(fixed.out).toContain("removed");
+      expect(fs.existsSync(envBin)).toBe(false);
+      // and the shim every environment shares was never pointed at the copy
+      const shim = fs.readFileSync(path.join(tmp, "state/shims/kimi"), "utf8");
+      expect(shim).toContain(`real=${JSON.stringify(path.join(outsideDir, "kimi"))}`);
+    } finally {
+      process.env.PATH = prevPath;
+      fs.rmSync(path.join(outsideDir, "kimi"), { force: true });
+      fs.rmSync(path.join(home, ".zshrc"), { force: true });
+    }
+  });
+
   test("rm 先修好指向环境的软链，删完命令还在", async () => {
     await run(["create", "victim"]);
     const launcher = plantStrayLauncher("victim", "8.8.8", "claude-victim");
