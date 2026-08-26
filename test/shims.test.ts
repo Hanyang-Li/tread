@@ -15,6 +15,21 @@ const {
 } = await import("../src/shims.ts");
 const { shimsDir, envsDir } = await import("../src/paths.ts");
 
+/**
+ * 一个顶替 cursor-agent 的假二进制。
+ *
+ * 旁边的 node 和 index.js 不是摆设：realBinary 检查的是启动脚本真正 exec 的那些
+ * 文件，光有一个脚本会被判为跑不起来，shim 就会转而把真的 cursor-agent 烘进去。
+ */
+function fakeCursor(dir: string, body: string): string {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "node"), "placeholder", { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "index.js"), "placeholder");
+  const p = path.join(dir, "cursor-agent");
+  fs.writeFileSync(p, body, { mode: 0o755 });
+  return p;
+}
+
 describe("shims", () => {
   test("为每个 agent 及其别名各生成一个可执行 shim", () => {
     writeShims();
@@ -64,6 +79,45 @@ describe("shims", () => {
     const found = realBinary("claude");
     expect(found).not.toBe(path.join(shimsDir(), "claude"));
     process.env.PATH = prev;
+  });
+
+  // 更新失败留下的就是这个：文件在、可执行位在、只是 0 字节。前面每一道检查它
+  // 都过得去，doctor 会给一个跑不起来的命令报 ok。
+  test("realBinary 跳过 0 字节的二进制：那是更新失败的残骸，不是能跑的东西", () => {
+    const dir = path.join(tmp, "emptybin");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "kimi"), "", { mode: 0o755 });
+    const prev = process.env.PATH;
+    process.env.PATH = dir;
+    try {
+      expect(realBinary("kimi")).toBe(null);
+    } finally {
+      process.env.PATH = prev;
+    }
+  });
+
+  // cursor-agent 在 PATH 上的那个文件是启动脚本，真正跑的是它同目录 exec 的
+  // node 和 index.js。只看脚本的话，负载没了它照样报健康 —— 于是 doctor --fix
+  // 也会拒绝恢复，因为在它看来根本没出问题。
+  test("realBinary 看的是 cursor 真正要跑的东西，不是 PATH 上那个启动脚本", () => {
+    const dir = path.join(tmp, "cursor-payload");
+    fakeCursor(dir, "#!/bin/sh\nexit 0\n");
+    const prev = process.env.PATH;
+    process.env.PATH = dir;
+    try {
+      expect(realBinary("cursor-agent")).toBe(path.join(dir, "cursor-agent"));
+
+      // 负载被清零：脚本本身完好，可执行位也在
+      fs.writeFileSync(path.join(dir, "node"), "");
+      expect(realBinary("cursor-agent")).toBe(null);
+
+      // 负载整个消失
+      fs.writeFileSync(path.join(dir, "node"), "placeholder", { mode: 0o755 });
+      fs.rmSync(path.join(dir, "index.js"));
+      expect(realBinary("cursor-agent")).toBe(null);
+    } finally {
+      process.env.PATH = prev;
+    }
   });
 
   test("生成的 shim 是合法 sh 脚本", async () => {
@@ -116,11 +170,7 @@ describe("shims", () => {
   test("shim 真的会把 HOME 和变量传给被调用的程序", async () => {
     // stand in for cursor-agent: a script that prints what it received
     const fakeDir = path.join(tmp, "fakebin");
-    fs.mkdirSync(fakeDir, { recursive: true });
-    const fake = path.join(fakeDir, "cursor-agent");
-    fs.writeFileSync(fake, '#!/bin/sh\necho "HOME=$HOME"\necho "CFG=$CURSOR_CONFIG_DIR"\n', {
-      mode: 0o755,
-    });
+    fakeCursor(fakeDir, '#!/bin/sh\necho "HOME=$HOME"\necho "CFG=$CURSOR_CONFIG_DIR"\n');
 
     const prev = process.env.PATH;
     process.env.PATH = `${fakeDir}:${prev}`;
@@ -145,10 +195,7 @@ describe("shims", () => {
     // otherwise a `tread` the agent shells out to resolves its own state dir
     // into the environment and reports no environments at all
     const fakeDir = path.join(tmp, "fakebin");
-    const fake = path.join(fakeDir, "cursor-agent");
-    fs.writeFileSync(fake, '#!/bin/sh\necho "HOME=$HOME"\necho "REAL=$TREAD_HOME"\n', {
-      mode: 0o755,
-    });
+    fakeCursor(fakeDir, '#!/bin/sh\necho "HOME=$HOME"\necho "REAL=$TREAD_HOME"\n');
     const envRoot = path.join(tmp, "envs", "probe");
     const p2 = Bun.spawn([path.join(shimsDir(), "cursor-agent")], {
       env: {
@@ -307,6 +354,10 @@ describe("自动更新：环境内关掉，环境外不动", () => {
     const fakeDir = path.join(tmp, `fakebin-noupdate-${name}`);
     fs.mkdirSync(fakeDir, { recursive: true });
     fs.writeFileSync(path.join(fakeDir, name), probe, { mode: 0o755 });
+    // cursor-agent 的健康检查看的是它 exec 的 node 和 index.js，不是 PATH 上那个
+    // 脚本；对 kimi 来说这两个文件只是躺在旁边，不碍事
+    fs.writeFileSync(path.join(fakeDir, "node"), "placeholder", { mode: 0o755 });
+    fs.writeFileSync(path.join(fakeDir, "index.js"), "placeholder");
 
     const prev = process.env.PATH;
     process.env.PATH = `${fakeDir}:${prev}`;

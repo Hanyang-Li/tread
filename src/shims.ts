@@ -2,8 +2,27 @@ import fs from "node:fs";
 import path from "node:path";
 import { AGENTS, AGENT_SPECS, shimNames, type Agent } from "./agents.ts";
 import { listEnvs } from "./env.ts";
-import { agentDir, envDir, envsDir, isUnder, realHome, shimsDir } from "./paths.ts";
+import {
+  agentDir, envDir, envsDir, envsDirSpellings, isUnder, realHome, shimsDir,
+} from "./paths.ts";
 import { writeFileAtomic } from "./atomic.ts";
+import { backupStampFile } from "./backup.ts";
+
+/**
+ * The tread binary a shim should call back into.
+ *
+ * Baked in rather than resolved through PATH: the shim would otherwise have to
+ * fork `command -v` on every launch to find out, and the one thing the backup
+ * check may not do is cost anything on the launches where there is nothing to
+ * do. `process.execPath` is the compiled binary in the installed case; running
+ * from source it is bun, and the shim's own `[ -x "$tread" ]` guard then turns
+ * the whole thing off — which is the right answer for a dev checkout, and what
+ * keeps the generated text out of the tests' way.
+ */
+function treadBinary(): string {
+  const p = process.env.TREAD_BIN ?? process.execPath;
+  return path.basename(p) === "tread" ? p : "";
+}
 
 /** Single-quote a value for /bin/sh, closing and reopening around any quote. */
 function shq(s: string): string {
@@ -26,17 +45,27 @@ function shq(s: string): string {
  * environment: that is the same damage arriving through a shared directory
  * rather than through PATH, and `stray.ts` is what repairs it.
  */
+/** Every file `name` needs at runtime is there and non-empty. */
+function runnable(name: string, resolved: string): boolean {
+  const agent = shimNames().find((s) => s.name === name)?.agent;
+  const files = agent ? AGENT_SPECS[agent].runtimeFiles(resolved) : [resolved];
+  return files.every((f) => {
+    try {
+      // An empty file is what a failed self-update leaves behind — claude's
+      // updater writes the version file before it has the bytes, so a download
+      // that dies leaves 0 bytes at the path the launcher already names.
+      return fs.statSync(f).size > 0;
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function realBinary(name: string): string | null {
   const shims = path.resolve(shimsDir());
-  const envs = envsDir();
-  // both spellings of the same directory: the state dir can sit behind a
-  // symlink — `/var` is `/private/var` on macOS — and a copy inside an
-  // environment would sail through a comparison against only one of them
-  let resolved = envs;
-  try {
-    resolved = fs.realpathSync(envs);
-  } catch {}
-  const inEnv = (p: string) => isUnder(p, envs) || isUnder(p, resolved);
+  // resolved once, not per candidate: this runs for every entry on PATH
+  const envs = envsDirSpellings();
+  const inEnv = (p: string) => envs.some((d) => isUnder(p, d));
   for (const dir of (process.env.PATH ?? "").split(":")) {
     if (!dir) continue;
     const abs = path.resolve(dir);
@@ -45,7 +74,14 @@ export function realBinary(name: string): string | null {
     try {
       fs.accessSync(p, fs.constants.X_OK);
       if (!(fs.statSync(p).isFile() || fs.lstatSync(p).isSymbolicLink())) continue;
-      if (inEnv(fs.realpathSync(p))) continue;
+      const resolved = fs.realpathSync(p);
+      if (inEnv(resolved)) continue;
+      // Present and executable is not the same as runnable, and the difference
+      // is the whole point for cursor-agent: the name on PATH is a launcher
+      // script, and it is the `node` and `index.js` beside it that have to be
+      // there. Reporting this one as healthy would also stop `doctor --fix`
+      // restoring it, since nothing would look wrong.
+      if (!runnable(name, resolved)) continue;
       return p;
     } catch {}
   }
@@ -67,6 +103,27 @@ function script(name: string, agent: Agent, real: string | null): string {
     'if [ -z "$real" ]; then',
     `  echo "tread: cannot find the real ${name} on PATH" >&2`,
     "  exit 127",
+    "fi",
+    "",
+    // Above the early exec on purpose, so this runs whether or not an
+    // environment is active. The loss it guards against is not an
+    // environment's doing — a self-update failing in the real home leaves the
+    // same 0-byte file either way — and $HOME is still the user's own here,
+    // which the code below depends on.
+    `# keep a copy of ${name} where ${name} cannot reach it: a failed self-update`,
+    "# leaves an empty file where the binary was, and nothing left to run. The",
+    "# copy is an APFS clone, so it costs no disk until the original changes.",
+    `stamp=${shq(backupStampFile(agent))}`,
+    `tread=${shq(treadBinary())}`,
+    // every test here is a shell builtin, so a launch that has nothing to do
+    // forks nothing at all. `-nt` alone is not enough: dash and zsh call
+    // `file -nt <missing>` false, which would mean the first backup never runs.
+    'if [ -s "$real" ] && [ -x "$tread" ] &&',
+    '   { [ ! -e "$stamp" ] || [ "$real" -nt "$stamp" ]; }; then',
+    // backgrounded, and that is the whole reason cursor can be covered at all:
+    // cloning its 224MB version directory takes ~77ms, which is fine to spend
+    // beside the agent and not fine to spend in front of it
+    `  "$tread" _backup ${agent} "$real" >/dev/null 2>&1 &`,
     "fi",
     "",
     "# outside an environment, behave exactly like the real thing",

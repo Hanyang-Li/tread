@@ -25,6 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/Hanyang-Li/tread/main/install.sh | 
 | `~/.local/bin/tread` | 二进制 |
 | `~/.local/state/tread/envs/<name>/` | 环境（根目录可用 `TREAD_STATE_DIR` 覆盖） |
 | `~/.local/state/tread/shims/` | agent 启动垫片（`tread doctor --fix` 可重建） |
+| `~/.local/state/tread/binaries/` | 每个 agent 二进制的克隆，自我更新失败时用来恢复 |
 | `~/.local/state/tread/state.json` | 上次使用时间 |
 | `~/.local/share/tread/_tread` | zsh 补全 |
 | `~/.config/tread/config.yaml` | 全局配置（可选） |
@@ -200,6 +201,20 @@ claude 的原生自更新器就是这样。在环境里更新时，它把 launch
 
 映射不成立的地方宁可报告也不猜：指向环境根目录的、或者指向 `<env>/.claude` 这类隔离目录的，都只报告不动手——那不是 tread 造成的，也就不该由 tread 改。
 
+### 自我更新失败不再赔上整个二进制
+
+关掉更新开关管的是在**环境内**跑的更新。真正会咬人的是另一种：在真 home 里跑的更新失败了一半。claude 是先建版本文件再往里写字节的，下载中途断掉就留下一个 **0 字节**的 `~/.local/share/claude/versions/<v>`，而 launcher 已经指过去了。这件事跟 tread 没有半点关系，也没有任何开关拦得住——命令就这么没了。
+
+所以每个 shim 会留一份副本。在二进制发生过变化的那次启动上，它在后台回调 `tread`，把安装克隆到 `~/.local/state/tread/binaries/<agent>/`。`tread doctor` 以 `backups` 报告它，`--fix` 把它放回去——连同 launcher 软链一起，因为只把文件放回原处、链接还指着那个空壳的话，等于什么都没修。
+
+判定「坏了」看的是 agent 真正 exec 的那些文件，不是 PATH 上那个名字。cursor-agent 的 launcher 是个 1.1k 的 bash 脚本，跑的是它同目录里的 `node index.js`，所以脚本完好、旁边负载没了这种情况会被抓出来而不是放行——也必须如此，因为一个把它判成 `ok` 的健康检查，同时也会拦住 `--fix` 去恢复它。
+
+其中三点是刻意的：
+
+- **用的是 APFS clone，不是硬链接。** 硬链接共享 inode，更新器要是原地覆写，备份会跟着一起完蛋。clone 有自己的 inode，源被清零它照样完好。而且两者里只有它能覆盖整个目录，这正是 cursor-agent 需要的：它的 `cursor-agent` 是个 1.1k 的 shell 脚本，依赖的 224MB 就在旁边。只支持 macOS，而且是故意的——`cp -c` 会直接失败，而不是悄悄退化成一次真复制。
+- **agent 不更新就不占磁盘。** clone 和原文件共享 block，所以刚做完时 `df` 几乎不动；`du` 会报满额，那是它在骗你。只有当 agent 装了新版本并删掉旧的，这份空间才变成实占，而下一次启动 shim 把新版本克隆上来时又会释放掉。
+- **启动路径上不为它付任何代价。** 判断是三个 shell 内建命令，没事可做时一个进程都不 fork；克隆本身跑在后台。源是 0 字节时拒绝备份——那是残骸不是二进制——源在环境内时同样拒绝，那种副本正是 `env installs` 存在的意义。
+
 ### 登录态是共享的，不是每环境一份
 
 在真 home 上登录一次，所有环境就都是已登录状态，`create` 和 `cp` 都一样。三家走的路不同，只有一家需要 tread 额外做事：
@@ -250,7 +265,7 @@ login:
 
   `tread doctor` 按当前目录报，且只报**真的存在**的那些——`~/AGENTS.md`、`~/.mcp.json` 这类默认不存在，你不建就不会出现在警告里。
 
-- **对真 home 的保护守的是引用，不是内容。** 环境里往真 home 写下的软链会被发现并修回来；在那儿**删掉**一个文件则不会——claude 的安装器清理 `~/.local/share/claude/versions/` 里的旧版本干的就是这件事（无害），而事后没有任何办法把它和一次正常删除区分开。检查还只挂在 tread 自己的命令上，所以用 `rm -rf` 而不是 `tread rm` 删环境就绕过去了，`tread doctor` 是兜底。
+- **对真 home 的保护守的是引用，不是内容。** 环境里往真 home 写下的软链会被发现并修回来；在那儿**删掉**一个文件则不会——claude 的安装器清理 `~/.local/share/claude/versions/` 里的旧版本干的就是这件事（无害），而事后没有任何办法把它和一次正常删除区分开。二进制本身是个例外，也仅仅因为副本是提前留好的，见[备份](#自我更新失败不再赔上整个二进制)。检查还只挂在 tread 自己的命令上，所以用 `rm -rf` 而不是 `tread rm` 删环境就绕过去了，`tread doctor` 是兜底。
 
 - **只管理环境级（全局）内容。** project scope 的 skill / plugin / MCP / hook 不读也不显示——那是各 agent 自己的事。
 

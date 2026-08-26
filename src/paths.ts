@@ -35,6 +35,29 @@ export function envsDir(): string {
   return path.join(stateDir(), "envs");
 }
 
+/**
+ * Both spellings of the environments directory.
+ *
+ * The state dir can sit behind a symlink — `/var` is `/private/var` on macOS —
+ * so a path that has been through `realpath` and one that has not disagree
+ * about the same directory, and a containment check against only one of them
+ * waves through exactly what it was written to stop. Anything asking "is this
+ * inside an environment" has to ask it of both, which is why this is here
+ * rather than inline at the one call site that first needed it.
+ */
+export function envsDirSpellings(): string[] {
+  const envs = envsDir();
+  try {
+    const real = fs.realpathSync(envs);
+    if (real !== envs) return [envs, real];
+  } catch {}
+  return [envs];
+}
+
+export function underEnvs(p: string): boolean {
+  return envsDirSpellings().some((d) => isUnder(p, d));
+}
+
 export function stateFile(): string {
   return path.join(stateDir(), "state.json");
 }

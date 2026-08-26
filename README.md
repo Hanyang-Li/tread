@@ -25,6 +25,7 @@ Where things live:
 | `~/.local/bin/tread` | the binary |
 | `~/.local/state/tread/envs/<name>/` | one environment (`TREAD_STATE_DIR` overrides the root) |
 | `~/.local/state/tread/shims/` | agent launcher shims (`tread doctor --fix` rebuilds them) |
+| `~/.local/state/tread/binaries/` | a clone of each agent binary, for when a self-update fails |
 | `~/.local/state/tread/state.json` | last-used timestamps |
 | `~/.local/share/tread/_tread` | zsh completion |
 | `~/.config/tread/config.yaml` | optional global config |
@@ -216,6 +217,20 @@ kimi is the one that slips past `home links` entirely. `KIMI_CODE_HOME` is `<env
 
 So resolving a shim's target now skips two things: tread's own shim directory, and **any directory inside an environment**, both when the shim is generated and in its runtime fallback. `tread doctor` reports what is already there as `env installs` — the copy, its size, the install it shadows, and the `~/.zshrc` line that put it on `PATH`. `--fix` deletes the copy, provided there is one outside to fall back on. The rc line is named and left alone: a shell rc is yours, and `doctor` does not edit config it did not write.
 
+### A failed self-update no longer costs you the binary
+
+Switching the updaters off covers updates run *inside* an environment. It cannot cover the other case, which is the one that actually bites: an update in your real home that fails partway. claude writes the version file before it has the bytes, so a download that dies leaves `~/.local/share/claude/versions/<v>` at **zero bytes** with the launcher already pointing at it. Nothing about that involves tread, and no switch prevents it — the command is simply gone.
+
+So each shim keeps a copy. On the launches where the binary has changed, it calls back into `tread` in the background to clone the install into `~/.local/state/tread/binaries/<agent>/`. `tread doctor` reports it as `backups`, and `--fix` puts it back — the payload *and* the launcher symlink, since restoring the file while the link still names the empty one repairs nothing you can run.
+
+What counts as broken is decided by the files the agent actually execs, not by the name on PATH. cursor-agent's launcher is a 1.1k bash script that runs `node index.js` out of its own directory, so an intact script beside a missing payload is caught instead of waved through — and it has to be, because a health check that called that one `ok` would also stop `--fix` from restoring it.
+
+Three things about that are deliberate:
+
+- **It is an APFS clone, not a hard link.** A hard link shares the inode, so an updater overwriting in place would take the backup with it. A clone gets its own inode and survives the original being truncated to zero. It is also the only one of the two that can cover a directory, which cursor-agent needs: its `cursor-agent` is a 1.1k shell script and the 224MB it depends on sits beside it. macOS only, and on purpose — `cp -c` fails rather than quietly falling back to a real copy.
+- **It costs no disk until the agent updates.** The clone shares blocks with the original, so `df` barely moves when it is taken; `du` reports the full size and is lying to you. The space becomes real only once the agent installs a new version and deletes the old one, and it is released again on the next launch, when the shim clones the new version over it.
+- **Nothing on the launch path pays for it.** The check is three shell builtins and forks nothing when there is nothing to do; the clone itself runs in the background. A copy is refused when the source is zero bytes — that is the wreckage, not the binary — or when it sits inside an environment, which is the copy `env installs` exists to delete.
+
 ### Logins are shared, not per environment
 
 You log in once, on your real home, and every environment is already logged in — `create` and `cp` alike. Each agent gets there differently, and only one of them needed tread to do anything about it:
@@ -266,7 +281,7 @@ Two things worth knowing. Every environment shares one account — that is the p
 
   `tread doctor` reports against your current directory, and only for the ones that **actually exist** — `~/AGENTS.md` and `~/.mcp.json` do not exist by default, so if you never created them they never show up in the warnings.
 
-- **The real-home protection covers references, not content.** A symlink written into your real home from inside an environment is caught and repaired; a file *deleted* there is not — claude's installer pruning old builds out of `~/.local/share/claude/versions/` is doing exactly that, harmlessly, and nothing after the fact can tell it apart from any other delete. The check also runs on tread's own commands, so removing an environment with `rm -rf` instead of `tread rm` skips it. `tread doctor` is the catch-all.
+- **The real-home protection covers references, not content.** A symlink written into your real home from inside an environment is caught and repaired; a file *deleted* there is not — claude's installer pruning old builds out of `~/.local/share/claude/versions/` is doing exactly that, harmlessly, and nothing after the fact can tell it apart from any other delete. The binary itself is the exception, and only because a copy was taken in advance: see [backups](#a-failed-self-update-no-longer-costs-you-the-binary). The check also runs on tread's own commands, so removing an environment with `rm -rf` instead of `tread rm` skips it. `tread doctor` is the catch-all.
 
 - **Switching the updaters off is the shim's doing, so an agent started by absolute path is not covered.** `<abs>/kimi` inside an active environment never runs `<state>/shims/kimi` and will update itself into `<env>/.kimi-code/bin` as before. The variables are deliberately *not* exported into your shell by `tread use` — `DISABLE_UPDATES` is a generic enough name that suppressing it account-wide would reach tools that have nothing to do with tread. `tread doctor` catches the result either way.
 

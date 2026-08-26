@@ -1,3 +1,5 @@
+import path from "node:path";
+
 export const AGENTS = ["claude", "cursor", "kimi"] as const;
 export type Agent = (typeof AGENTS)[number];
 
@@ -64,6 +66,27 @@ export interface AgentSpec {
    */
   inEnvBin: string | null;
   /**
+   * The files that actually have to be there for this agent to run, given the
+   * resolved path of the executable found on PATH.
+   *
+   * claude and kimi are single self-contained files, so the answer is the
+   * executable itself. cursor-agent is not: what sits on PATH is a 1.1k bash
+   * script whose last line is
+   *
+   *     exec -a "$0" "$SCRIPT_DIR/node" "$SCRIPT_DIR/index.js" "$@"
+   *
+   * so the script existing and being non-empty says nothing about whether the
+   * program can start. Checking only the name on PATH would report a healthy
+   * install for one whose 224MB of payload is gone — and then `doctor --fix`
+   * would decline to restore it, because as far as it could see there was
+   * nothing wrong.
+   *
+   * The two names are read off that exec line rather than out of a manifest,
+   * which is what makes this version-independent: a cursor update replaces
+   * every file in the directory, but it is still `node` running `index.js`.
+   */
+  runtimeFiles(resolvedBin: string): string[];
+  /**
    * Whether the agent must be launched with HOME pointed at the env root.
    *
    * True for all three, and for one shared reason: an agent's own config
@@ -113,6 +136,7 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     // survives switching from a sharing environment to this one, where an
     // absent variable would leave the previous "" in the shell.
     loginVars: (d, isolated) => ({ CLAUDE_SECURESTORAGE_CONFIG_DIR: isolated ? d : "" }),
+    runtimeFiles: (p) => [p],
     needsHome: true,
     isolate: () => [],
     volatile: [
@@ -132,6 +156,10 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     // nothing to set: cursor-agent stores its login in the keychain under a
     // fixed service name, so sharing Library/Keychains already shares it
     loginVars: () => ({}),
+    runtimeFiles: (p) => {
+      const dir = path.dirname(p);
+      return [p, path.join(dir, "node"), path.join(dir, "index.js")];
+    },
     needsHome: true,
     // cursor-agent also reads the desktop app's state DB, which caches the
     // skill and plugin index. Sharing it leaks every skill you ever had;
@@ -159,6 +187,7 @@ export const AGENT_SPECS: Record<Agent, AgentSpec> = {
     // nothing to set: kimi keeps credentials in files, which `ensureSkeleton`
     // symlinks back to the real home
     loginVars: () => ({}),
+    runtimeFiles: (p) => [p],
     needsHome: true,
     isolate: () => [],
     volatile: [

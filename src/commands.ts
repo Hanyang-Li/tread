@@ -14,13 +14,16 @@ import { loginIssues, sharedLogin } from "./login.ts";
 import { homeLeak } from "./leak.ts";
 import { findStrayLinks, healStrayLinks, repairStrayLink, type StrayLink } from "./stray.ts";
 import { copyEnv } from "./copy.ts";
+import { backupsDir, captureBinary, listBackups, restoreBinary } from "./backup.ts";
 import { complete, completionState, writeCompletion } from "./completion.ts";
 import {
   envPathEntries, findInEnvBinaries, realBinary, removeInEnvBinary, shimsHealthy, writeShims,
   type InEnvBinary,
 } from "./shims.ts";
 import { deactivateLines, exportLines, initSnippet, shellLoaded, writeInit } from "./shell.ts";
-import { colorsEnabled, color, formatError, table, tildify, type Palette } from "./render.ts";
+import {
+  colorsEnabled, color, formatError, relTime, table, tildify, type Palette,
+} from "./render.ts";
 import { VERSION } from "./version.ts";
 import {
   hooksList, isCategory, lsPlain, mcpDetail, mcpList, pluginDetail, pluginsList,
@@ -308,6 +311,22 @@ function doctorCommand(args: string[], out: Out): number {
   if (fix) for (const b of inEnv) if (removeInEnvBinary(b)) removedBins.add(b);
   const inEnvLeft = inEnv.filter((b) => !removedBins.has(b));
 
+  // ahead of the shims for the same reason removing an in-env copy is: putting
+  // a binary back changes what `real=` resolves to, and the regenerated shim
+  // has to be written against the repaired answer rather than the broken one.
+  //
+  // Only when there is nothing left on PATH. A backup is the older version by
+  // definition, so restoring over a working install would be a downgrade
+  // nobody asked for — this repairs an absence, never a disagreement.
+  const restored = new Map<Agent, string | null>();
+  if (fix) {
+    for (const b of listBackups(realBinary)) {
+      if (!b.present || realBinary(AGENT_SPECS[b.agent].bin) !== null) continue;
+      const r = restoreBinary(b.agent);
+      restored.set(b.agent, r.ok ? null : (r.error ?? "failed"));
+    }
+  }
+
   const healthy = shimsHealthy();
   if (!healthy && fix) writeShims();
   rows.push([
@@ -319,6 +338,60 @@ function doctorCommand(args: string[], out: Out): number {
     const bin = realBinary(name);
     const note = AGENT_SPECS[agent].needsHome ? c.dim("HOME redirected") : "";
     rows.push([`  ${name}`, bin ? ok : c.red("missing"), bin ? `${tildify(bin)}  ${note}` : ""]);
+  }
+
+  // A copy of each binary, taken by the shim on the launches where the version
+  // changed. It exists because a self-update that fails partway leaves an
+  // empty file where the binary was — no environment involved, nothing tread
+  // can prevent, and no way back without a copy. Reported next to the shims
+  // because the shims are what take it and what it repairs.
+  const backups = listBackups(realBinary);
+  const backedUp = backups.filter((b) => b.present);
+  // a backup whose binary is no longer on PATH — the situation the whole thing
+  // exists for, and the one the summary row has to stop calling "ok"
+  const restorable = new Set(
+    backedUp.filter((b) => realBinary(AGENT_SPECS[b.agent].bin) === null),
+  );
+  rows.push([
+    "backups",
+    restored.size > 0 && [...restored.values()].every((e) => e === null)
+      ? c.green(`${plural(restored.size, "binary")} restored`)
+      : restorable.size > 0 ? c.yellow(`${plural(restorable.size, "binary")} to restore`)
+      : backedUp.length === 0 ? c.dim("none yet")
+      : ok,
+    `${tildify(backupsDir())}   ${c.dim(
+      // du reports the full size and df barely moves: the clone shares blocks
+      // with the original until one of them is written. Saying so here because
+      // "376 MB" next to a directory you did not create invites the wrong
+      // conclusion, and the number does become real once the agent updates.
+      "APFS clones · no disk of their own until the agent updates",
+    )}`,
+  ]);
+  for (const b of backups) {
+    const err = restored.get(b.agent);
+    // the version directory names itself for claude and cursor-agent; kimi
+    // installs to `bin/kimi`, where the basename repeats the agent and says
+    // nothing about which build this is, so it gets the build date instead
+    const base = b.manifest ? path.basename(b.manifest.origin) : "";
+    const where = base === AGENT_SPECS[b.agent].bin ? relTime(b.manifest?.mtime ?? null) : base;
+    // Saying "older version" when there is nothing on PATH at all would be
+    // technically true and useless — what matters is that `--fix` can put it
+    // back, and this is the only place the user finds that out.
+    const gone = restorable.has(b);
+    rows.push([
+      `  ${b.agent}`,
+      err === null ? c.green("restored")
+      : err !== undefined ? c.red(err)
+      : gone ? c.yellow("can restore")
+      : b.current ? ok
+      : b.present ? c.yellow("older version")
+      : b.manifest?.error ? c.yellow(b.manifest.error)
+      : c.dim("none yet"),
+      b.present
+        ? `${where}  ${c.dim(megabytes(b.manifest!.bytes))}`
+          + (gone ? `   ${c.dim(`nothing on PATH · tread doctor --fix`)}` : "")
+        : c.dim(`taken on the next ${AGENT_SPECS[b.agent].bin} launch`),
+    ]);
   }
 
   // an agent that updated itself from inside an environment. Its install root
@@ -652,6 +725,17 @@ export async function runCommand(argv: string[], out: Out, err: Out = out): Prom
         const { code, text } = complete(args);
         if (text) out(text);
         return code;
+      }
+
+      // Called by a shim, in the background, on the launches where the agent's
+      // binary has changed. Silent by construction: its output is already
+      // going to /dev/null and its exit code is nobody's — what it has to say
+      // it says through the manifest, which `doctor` reads.
+      case "_backup": {
+        const agent = args[0];
+        const real = args[1];
+        if (!agent || !isAgent(agent) || !real) return 1;
+        return captureBinary(agent, real).error ? 1 : 0;
       }
 
       case "use":
